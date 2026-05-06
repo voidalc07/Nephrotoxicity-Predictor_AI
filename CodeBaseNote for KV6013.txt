@@ -1,0 +1,3365 @@
+==================================================
+
+<Project Structure>
+
+root/
+│── main.py
+│── serve_dashboard.py
+│── requirements.txt
+│── src/
+│   ├── config/settings.py
+│   ├── models/nephro_full_coverage.py
+│   ├── utils/live_analysis.py
+│   ├── utils/engine_loader.py
+│   ├── utils/consensus.py
+│── webapp/
+│   ├── index.html
+│   ├── app.js
+│   └── styles.css
+
+==================================================
+
+<File: main.py>
+
+```python
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+MPL_CACHE_DIR = PROJECT_ROOT / ".cache" / "matplotlib"
+# Keep Matplotlib cache in the project so it does not write to the user's home folder.
+MPL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_DIR))
+
+from src.models.registry import ALL_MODELS, MAIN_MODELS, PROTOTYPE_MODELS
+from src.pipelines.prepare_datasets import prepare_datasets
+from src.pipelines.run_all import parse_models_arg, run_all_models
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the consolidated KV6013 nephrotoxicity models.")
+    parser.add_argument(
+        "--models",
+        default=None,
+        help="Comma-separated subset of model names. Default: run the main model set.",
+    )
+    parser.add_argument(
+        "--force-rerun",
+        action="store_true",
+        help="Force model families to rerun instead of reusing archived outputs.",
+    )
+    parser.add_argument(
+        "--python-executable",
+        default=sys.executable,
+        help="Python executable used to launch legacy family pipelines when needed.",
+    )
+    parser.add_argument(
+        "--summary-csv",
+        default="outputs/final_reports/overall_evaluation.csv",
+        help="Path to the combined summary CSV.",
+    )
+    parser.add_argument(
+        "--predictions-csv",
+        default="outputs/detailed_predictions/all_model_predictions.csv",
+        help="Path to the combined detailed predictions CSV.",
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="Print the main model names and exit.",
+    )
+    parser.add_argument(
+        "--list-prototype-models",
+        action="store_true",
+        help="Print the available prototype model names and exit.",
+    )
+    parser.add_argument(
+        "--include-prototypes",
+        action="store_true",
+        help="Include prototype models in addition to the five main models.",
+    )
+    parser.add_argument(
+        "--prototypes-only",
+        action="store_true",
+        help="Run only prototype models.",
+    )
+    parser.add_argument(
+        "--skip-data-prep",
+        action="store_true",
+        help="Skip rebuilding datasets/processed from datasets/raw before running models.",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.list_models:
+        for name in MAIN_MODELS.keys():
+            print(name)
+        return 0
+
+    if args.list_prototype_models:
+        for name in PROTOTYPE_MODELS.keys():
+            print(name)
+        return 0
+
+    if not args.skip_data_prep:
+        # Clean the data first unless the user asked to skip that step.
+        report = prepare_datasets()
+        print(
+            f"[DATA] Prepared {len(report['datasets'])} datasets "
+            f"from {report['raw_dir']} -> {report['processed_dir']}"
+        )
+
+    # Pick which model group to run before starting the pipeline.
+    selected = parse_models_arg(args.models)
+    if args.prototypes_only:
+        available_models = PROTOTYPE_MODELS
+    elif args.include_prototypes or (selected and any(name in PROTOTYPE_MODELS for name in selected)):
+        available_models = ALL_MODELS
+    else:
+        available_models = MAIN_MODELS
+
+    summary_path = Path(args.summary_csv).expanduser()
+    predictions_path = Path(args.predictions_csv).expanduser()
+    _, _, failures = run_all_models(
+        selected_models=selected,
+        available_models=available_models,
+        force_rerun=args.force_rerun,
+        python_executable=args.python_executable,
+        summary_csv=summary_path,
+        predictions_csv=predictions_path,
+    )
+    return 0 if failures == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+==================================================
+
+<File: serve_dashboard.py>
+
+```python
+from __future__ import annotations
+
+import argparse
+import json
+import mimetypes
+import os
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from src.config.settings import PROJECT_ROOT
+from src.utils.dashboard_data import get_overview_payload, run_main_pipeline, search_predictions, static_file_path
+from src.utils.live_analysis import append_feedback, predict_live
+
+WEB_ROOT = PROJECT_ROOT / "webapp"
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    server_version = "FINAL_KV6013Dashboard/1.0"
+
+    def _send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, indent=2).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_file(self, path: Path) -> None:
+        body = path.read_bytes()
+        mime_type, _ = mimetypes.guess_type(path.name)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> dict:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length <= 0:
+            return {}
+        raw_body = self.rfile.read(content_length).decode("utf-8")
+        if not raw_body.strip():
+            return {}
+        return json.loads(raw_body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/health":
+            self._send_json({"status": "ok"})
+            return
+        if parsed.path == "/api/overview":
+            self._send_json(get_overview_payload())
+            return
+        if parsed.path == "/api/search":
+            query = parse_qs(parsed.query).get("q", [""])[0]
+            self._send_json(search_predictions(query))
+            return
+
+        try:
+            static_path = static_file_path(WEB_ROOT, parsed.path)
+            self._send_file(static_path)
+        except FileNotFoundError:
+            self._send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/run-main":
+            payload = self._read_json_body()
+            result = run_main_pipeline(
+                force_rerun=bool(payload.get("force_rerun", False)),
+                skip_data_prep=bool(payload.get("skip_data_prep", True)),
+            )
+            status = HTTPStatus.OK if result["returncode"] == 0 else HTTPStatus.INTERNAL_SERVER_ERROR
+            self._send_json(result, status=status)
+            return
+
+        payload = self._read_json_body()
+        if parsed.path == "/api/predict-live":
+            try:
+                result = predict_live(str(payload.get("smiles", "")))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:  # pragma: no cover
+                self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result)
+            return
+
+        if parsed.path == "/api/feedback":
+            try:
+                label = int(payload.get("label"))
+                if label not in (0, 1):
+                    raise ValueError
+            except (TypeError, ValueError):
+                self._send_json({"error": "Feedback label must be 0 or 1."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                result = append_feedback(
+                    str(payload.get("smiles", "")),
+                    label=label,
+                    source=str(payload.get("source", "")),
+                    note=str(payload.get("note", "")),
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:  # pragma: no cover
+                self._send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, status=HTTPStatus.CREATED)
+            return
+
+        self._send_json({"error": "Not found."}, status=HTTPStatus.NOT_FOUND)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Serve the final KV6013 nephrotoxicity predictor dashboard.")
+    default_port = int(os.environ.get("PORT", "8000"))
+    default_host = os.environ.get("HOST", "0.0.0.0" if "PORT" in os.environ else "127.0.0.1")
+    parser.add_argument("--host", default=default_host)
+    parser.add_argument("--port", type=int, default=default_port)
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    print(f"[SERVE] Dashboard available at http://{args.host}:{args.port}")
+    print(f"[SERVE] Project root: {PROJECT_ROOT}")
+    print(f"[SERVE] Using web assets from {WEB_ROOT}")
+    print("[SERVE] Press Ctrl+C in this terminal to stop the dashboard.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[SERVE] Stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+==================================================
+
+<File: requirements.txt>
+
+```text
+numpy
+pandas
+scikit-learn
+scipy
+lightgbm
+catboost
+optuna
+rdkit
+matplotlib
+seaborn
+tqdm
+joblib
+torch
+transformers
+safetensors
+```
+
+==================================================
+
+<File: src/config/settings.py>
+
+```python
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+FULL_BUILD_ROOT = Path(os.environ.get("NEPHROTOX_FULL_BUILD_ROOT", PROJECT_ROOT)).expanduser().resolve()
+
+
+def _first_existing(candidates: list[Path], default: Path) -> Path:
+    for path in candidates:
+        if path.exists():
+            return path
+    return default
+
+DATASETS_ROOT = PROJECT_ROOT / "datasets"
+RAW_DATA_DIR = DATASETS_ROOT / "raw"
+PROCESSED_DATA_DIR = DATASETS_ROOT / "processed"
+DATASET_REPORT_PATH = PROCESSED_DATA_DIR / "dataset_cleaning_report.json"
+
+OUTPUTS_ROOT = PROJECT_ROOT / "outputs"
+FINAL_REPORTS_DIR = OUTPUTS_ROOT / "final_reports"
+DETAILED_PREDICTIONS_DIR = OUTPUTS_ROOT / "detailed_predictions"
+
+ARCHIVED_DIR = PROJECT_ROOT / "archived"
+_LEGACY_DEFAULT = ARCHIVED_DIR / "legacy_project"
+_LEGACY_CANDIDATES = [
+    _LEGACY_DEFAULT,
+    FULL_BUILD_ROOT / "archived" / "legacy_project",
+    PROJECT_ROOT.parent / "FINAL_ KV6013_NEPHROTOXICITY_PREDICTOR" / "archived" / "legacy_project",
+    PROJECT_ROOT.parent / "KV6013-Python-Project" / "archived" / "legacy_project",
+]
+ARCHIVED_LEGACY_DIR = _first_existing(_LEGACY_CANDIDATES, _LEGACY_DEFAULT)
+ARCHIVED_REFRACTOR_DIR = ARCHIVED_DIR / "previous_refactor"
+RAW_RUNS_DIR = ARCHIVED_DIR / "run_cache"
+
+LEGACY_CONFIRMED_DIR = ARCHIVED_LEGACY_DIR / "confirmed_models"
+LEGACY_NOTEWORTHY_DIR = ARCHIVED_LEGACY_DIR / "noteworthy_models"
+LEGACY_EXPERIMENTS_DIR = ARCHIVED_LEGACY_DIR / "experiments"
+LEGACY_MODELS_DIR = ARCHIVED_LEGACY_DIR / "models"
+LEGACY_UTILS_DIR = ARCHIVED_LEGACY_DIR / "utils"
+
+FIXED_DATA_DIR = PROCESSED_DATA_DIR
+PROJECT_PLUS_DATA_DIR = PROCESSED_DATA_DIR
+
+DEFAULT_TRAIN_CSV = PROCESSED_DATA_DIR / "model_construction_dataset.csv"
+DEFAULT_EXTERNAL_CSV = PROCESSED_DATA_DIR / "external_test_dataset.csv"
+
+PROJECT_PLUS_TRAIN_CSV = DEFAULT_TRAIN_CSV
+PROJECT_PLUS_TEST_CSV = DEFAULT_EXTERNAL_CSV
+
+LIVE_ASSETS_DIR = PROJECT_ROOT / "live_assets"
+LIVE_ASSET_FINGERPRINTS = LIVE_ASSETS_DIR / "training_fingerprint_context_v1.npz"
+MODEL_ARTIFACTS_DIR = PROJECT_ROOT / "models"
+FEEDBACK_DIR = OUTPUTS_ROOT / "feedback"
+FEEDBACK_CSV = FEEDBACK_DIR / "confirmed_live_labels.csv"
+
+DEPLOYMENT_MODE = os.environ.get("NEPHROTOX_MODE", "portable").strip().lower() or "portable"
+
+PYTHON_EXECUTABLE = sys.executable
+```
+
+==================================================
+
+<File: src/models/nephro_full_coverage.py>
+
+```python
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from src.config.settings import LEGACY_CONFIRMED_DIR, PROJECT_PLUS_TEST_CSV, PROJECT_PLUS_TRAIN_CSV, RAW_RUNS_DIR
+from src.evaluation.schema import make_summary_row
+from src.models.common import (
+    ModelResult,
+    combine_notes,
+    compute_binary_metrics,
+    locate_existing,
+    merge_metrics,
+    prediction_rows_from_frame,
+)
+from src.utils.io import safe_read_csv, safe_read_json
+from src.utils.runners import run_python_script
+
+IMPROVEMENTS_MAIN_VARIANT = "meta_logreg_knn_plus_lgbm__cal_none__thr_f1"
+DESCRIPTOR_MAIN_VARIANT = "challenger_proxy_meta_logreg_knn_plus_lgbm__cal_none__thr_f1"
+
+
+def _prediction_lookup(root: Path, prefix: str) -> dict[str, Path]:
+    lookup: dict[str, Path] = {}
+    for path in root.rglob("*.csv"):
+        if path.name.startswith(prefix):
+            lookup[path.stem[len(prefix) :]] = path
+    return lookup
+
+
+def _external_prediction_rows(
+    *,
+    model_name: str,
+    variant: str,
+    predictions_path: Path,
+) -> tuple[list[dict[str, Any]], dict[str, float | None]]:
+    frame = safe_read_csv(predictions_path)
+    pred_col = "pred_label" if "pred_label" in frame.columns else "pred"
+    score_col = "prob_nephrotoxic" if "prob_nephrotoxic" in frame.columns else "prob"
+    rows = prediction_rows_from_frame(
+        frame,
+        model_name=model_name,
+        variant=variant,
+        dataset="external",
+        true_col="label",
+        pred_col=pred_col,
+        score_col=score_col,
+        sample_id_col="canonical_smiles",
+        sample_prefix="external",
+    )
+    metrics = compute_binary_metrics(
+        true_labels=frame["label"],
+        predicted_labels=frame[pred_col],
+        predicted_scores=frame[score_col],
+    )
+    return rows, metrics
+
+
+def _collect_improvements(root: Path, *, reused_archived_results: bool) -> ModelResult:
+    comparison_path = root / "comparison" / "baseline_vs_all_full_coverage_variants.csv"
+    comparison_df = safe_read_csv(comparison_path)
+    predictions_lookup = _prediction_lookup(root, "external_predictions__")
+
+    baseline_config = root / "baseline" / "config.json"
+    if baseline_config.exists():
+        baseline_variant = safe_read_json(baseline_config).get("model_name")
+        baseline_predictions = root / "baseline" / "predictions_external.csv"
+        if baseline_variant and baseline_predictions.exists():
+            predictions_lookup[str(baseline_variant)] = baseline_predictions
+
+    summary_rows: list[dict[str, Any]] = []
+    prediction_rows: list[dict[str, Any]] = []
+
+    for _, raw_row in comparison_df.iterrows():
+        row = raw_row.to_dict()
+        variant = str(row["variant"])
+        prediction_path = predictions_lookup.get(variant)
+        has_details = prediction_path is not None and prediction_path.exists()
+        metrics: dict[str, float | None] = {}
+
+        if has_details and prediction_path is not None:
+            variant_prediction_rows, metrics = _external_prediction_rows(
+                model_name="full_coverage_improvements",
+                variant=variant,
+                predictions_path=prediction_path,
+            )
+            prediction_rows.extend(variant_prediction_rows)
+
+        external_row = make_summary_row(
+            model_name="full_coverage_improvements",
+            variant=variant,
+            dataset="external",
+            accuracy=row.get("external_accuracy"),
+            f1=row.get("external_f1"),
+            roc_auc=row.get("external_auroc"),
+            notes=combine_notes(
+                f"base_model={row.get('base_model')}",
+                f"coverage={row.get('coverage')}",
+                "detailed_predictions_available" if has_details else "detailed_predictions_unavailable",
+                "reused_archived_results" if reused_archived_results else None,
+            ),
+        )
+        summary_rows.append(merge_metrics(external_row, metrics))
+
+        summary_rows.append(
+            make_summary_row(
+                model_name="full_coverage_improvements",
+                variant=variant,
+                dataset="internal_cv",
+                accuracy=row.get("internal_accuracy_mean"),
+                f1=row.get("internal_f1_mean"),
+                roc_auc=row.get("internal_auroc_mean"),
+                notes=combine_notes(
+                    f"base_model={row.get('base_model')}",
+                    f"coverage={row.get('coverage')}",
+                    "internal_cv_mean",
+                ),
+            )
+        )
+
+    return ModelResult(summary_rows=summary_rows, prediction_rows=prediction_rows)
+
+
+def _collect_descriptor_v4(root: Path, *, reused_archived_results: bool) -> ModelResult:
+    comparison_path = root / "comparison" / "baseline_vs_all_full_coverage_variants.csv"
+    comparison_df = safe_read_csv(comparison_path)
+    predictions_lookup = _prediction_lookup(root / "predictions", "predictions_external__")
+
+    summary_rows: list[dict[str, Any]] = []
+    prediction_rows: list[dict[str, Any]] = []
+
+    for _, raw_row in comparison_df.iterrows():
+        row = raw_row.to_dict()
+        variant = str(row["variant"])
+        prediction_path = predictions_lookup.get(variant)
+        has_details = prediction_path is not None and prediction_path.exists()
+        metrics: dict[str, float | None] = {}
+
+        if has_details and prediction_path is not None:
+            variant_prediction_rows, metrics = _external_prediction_rows(
+                model_name="full_coverage_descriptor_fp_meta_v4",
+                variant=variant,
+                predictions_path=prediction_path,
+            )
+            prediction_rows.extend(variant_prediction_rows)
+
+        external_row = make_summary_row(
+            model_name="full_coverage_descriptor_fp_meta_v4",
+            variant=variant,
+            dataset="external",
+            accuracy=row.get("external_accuracy"),
+            recall=row.get("external_recall"),
+            f1=row.get("external_f1"),
+            roc_auc=row.get("external_auroc"),
+            notes=combine_notes(
+                f"family={row.get('family')}",
+                f"selection_mode={row.get('selection_mode')}",
+                f"coverage={row.get('coverage')}",
+                "detailed_predictions_available" if has_details else "detailed_predictions_unavailable",
+                "reused_archived_results" if reused_archived_results else None,
+            ),
+        )
+        summary_rows.append(merge_metrics(external_row, metrics))
+
+        summary_rows.append(
+            make_summary_row(
+                model_name="full_coverage_descriptor_fp_meta_v4",
+                variant=variant,
+                dataset="internal_cv",
+                accuracy=row.get("internal_accuracy_mean"),
+                recall=row.get("internal_recall_mean"),
+                f1=row.get("internal_f1_mean"),
+                roc_auc=row.get("internal_auroc_mean"),
+                notes=combine_notes(
+                    f"family={row.get('family')}",
+                    f"selection_mode={row.get('selection_mode')}",
+                    "internal_cv_mean",
+                ),
+            )
+        )
+
+    return ModelResult(summary_rows=summary_rows, prediction_rows=prediction_rows)
+
+
+def _select_main_variant(result: ModelResult, *, selected_variant: str) -> ModelResult:
+    summary_rows = [row for row in result.summary_rows if row.get("variant") == selected_variant]
+    prediction_rows = [row for row in result.prediction_rows if row.get("variant") == selected_variant]
+
+    if not summary_rows:
+        raise ValueError(f"Could not find selected variant {selected_variant!r} in full-coverage results.")
+
+    for row in summary_rows:
+        row["notes"] = combine_notes(row.get("notes"), "selected_main_variant")
+
+    return ModelResult(summary_rows=summary_rows, prediction_rows=prediction_rows)
+
+
+def run_full_coverage_improvements_all_variants(config: dict[str, object]) -> ModelResult:
+    force = bool(config.get("force_rerun", False))
+    python_exec = config.get("python_executable")
+
+    output_root = RAW_RUNS_DIR / "full_coverage_improvements"
+    primary = output_root / "comparison" / "baseline_vs_all_full_coverage_variants.csv"
+    fallback_root = LEGACY_CONFIRMED_DIR / "results_full_coverage_improvements"
+    fallback = fallback_root / "comparison" / "baseline_vs_all_full_coverage_variants.csv"
+
+    if force or not (primary.exists() or fallback.exists()):
+        run_python_script(
+            LEGACY_CONFIRMED_DIR / "run_full_coverage_improvements.py",
+            [
+                "--train",
+                str(PROJECT_PLUS_TRAIN_CSV),
+                "--external",
+                str(PROJECT_PLUS_TEST_CSV),
+                "--output-root",
+                str(output_root),
+            ],
+            cwd=LEGACY_CONFIRMED_DIR.parent,
+            python_executable=str(python_exec) if python_exec else None,
+        )
+
+    comparison_path = locate_existing(primary, fallback)
+    root = comparison_path.parent.parent
+    return _collect_improvements(root, reused_archived_results=root == fallback_root)
+
+
+def run_full_coverage_improvements(config: dict[str, object]) -> ModelResult:
+    return _select_main_variant(
+        run_full_coverage_improvements_all_variants(config),
+        selected_variant=IMPROVEMENTS_MAIN_VARIANT,
+    )
+
+
+def run_full_coverage_descriptor_fp_meta_v4_all_variants(config: dict[str, object]) -> ModelResult:
+    force = bool(config.get("force_rerun", False))
+    python_exec = config.get("python_executable")
+
+    output_root = RAW_RUNS_DIR / "full_coverage_descriptor_fp_meta_v4"
+    primary = output_root / "comparison" / "baseline_vs_all_full_coverage_variants.csv"
+    fallback_root = LEGACY_CONFIRMED_DIR / "results_full_coverage_descriptor_fp_meta_v4"
+    fallback = fallback_root / "comparison" / "baseline_vs_all_full_coverage_variants.csv"
+
+    if force or not (primary.exists() or fallback.exists()):
+        run_python_script(
+            LEGACY_CONFIRMED_DIR / "run_full_coverage_descriptor_fp_meta_v4.py",
+            [
+                "--train",
+                str(PROJECT_PLUS_TRAIN_CSV),
+                "--external",
+                str(PROJECT_PLUS_TEST_CSV),
+                "--output-root",
+                str(output_root),
+            ],
+            cwd=LEGACY_CONFIRMED_DIR.parent,
+            python_executable=str(python_exec) if python_exec else None,
+        )
+
+    comparison_path = locate_existing(primary, fallback)
+    root = comparison_path.parent.parent
+    return _collect_descriptor_v4(root, reused_archived_results=root == fallback_root)
+
+
+def run_full_coverage_descriptor_fp_meta_v4(config: dict[str, object]) -> ModelResult:
+    return _select_main_variant(
+        run_full_coverage_descriptor_fp_meta_v4_all_variants(config),
+        selected_variant=DESCRIPTOR_MAIN_VARIANT,
+    )
+```
+
+==================================================
+
+<File: src/utils/live_analysis.py>
+
+```python
+from __future__ import annotations
+
+import csv
+from datetime import UTC, datetime
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from src.config.settings import DEFAULT_TRAIN_CSV, DEPLOYMENT_MODE, FEEDBACK_CSV, LIVE_ASSET_FINGERPRINTS
+from src.utils.chemistry_alerts import ALERT_DEFINITIONS
+from src.utils.consensus import ConsensusArbitrator, DomainMetrics
+from src.utils.engine_loader import EngineRegistry
+from src.utils.io import safe_read_csv
+
+try:
+    from rdkit import Chem, DataStructs
+    from rdkit import RDLogger
+    from rdkit.Chem import AllChem, Descriptors
+    from rdkit.Chem.Scaffolds import MurckoScaffold
+
+    RDLogger.DisableLog("rdApp.*")
+except Exception:  # pragma: no cover
+    Chem = None
+    DataStructs = None
+    AllChem = None
+    Descriptors = None
+    MurckoScaffold = None
+
+
+TOP_NEIGHBOURS = 5
+FINGERPRINT_BITS = 2048
+ROUTE_A_SIMILARITY = 0.5
+ROUTE_B_SIMILARITY = 0.3
+
+_CONTEXT_CACHE: dict[str, Any] = {"context": None, "mtime": None}
+_ALERT_PATTERNS: list[tuple[dict[str, str], Any]] | None = None
+_REGISTRY: EngineRegistry | None = None
+_ARBITRATOR = ConsensusArbitrator(route_a_threshold=ROUTE_A_SIMILARITY, route_b_threshold=ROUTE_B_SIMILARITY)
+
+
+def _rdkit_ready() -> bool:
+    return Chem is not None and AllChem is not None and DataStructs is not None and Descriptors is not None and MurckoScaffold is not None
+
+
+def _pick_smiles_column(frame: pd.DataFrame) -> str:
+    normalized = {col.strip().lower().replace("_", " "): col for col in frame.columns}
+    for key in ("canonical smiles", "canonical_smiles", "smiles", "smiles clean"):
+        if key in normalized:
+            return normalized[key]
+    raise ValueError("Could not find a SMILES column in the training dataset.")
+
+
+def _mol_from_smiles(smiles: str):
+    if not _rdkit_ready():
+        raise RuntimeError("RDKit is required for live analysis but is not available in this environment.")
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError("The supplied SMILES string could not be parsed.")
+    return mol
+
+
+def _bitvect_to_array(bitvect: Any) -> np.ndarray:
+    array = np.zeros((FINGERPRINT_BITS,), dtype=np.uint8)
+    DataStructs.ConvertToNumpyArray(bitvect, array)
+    return array
+
+
+def _canonicalize_smiles(smiles: str) -> str:
+    return Chem.MolToSmiles(_mol_from_smiles(smiles))
+
+
+def _murcko_scaffold_smiles(mol: Any) -> str:
+    scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+    if scaffold is None or scaffold.GetNumAtoms() == 0:
+        return ""
+    return Chem.MolToSmiles(scaffold)
+
+
+def _alert_patterns() -> list[tuple[dict[str, str], Any]]:
+    global _ALERT_PATTERNS
+    if _ALERT_PATTERNS is None:
+        compiled: list[tuple[dict[str, str], Any]] = []
+        for definition in ALERT_DEFINITIONS:
+            compiled.append((definition, Chem.MolFromSmarts(definition["smarts"]) if Chem is not None else None))
+        _ALERT_PATTERNS = compiled
+    return _ALERT_PATTERNS
+
+
+def _query_alerts(mol: Any) -> list[dict[str, str]]:
+    matches: list[dict[str, str]] = []
+    for definition, pattern in _alert_patterns():
+        if pattern is not None and mol.HasSubstructMatch(pattern):
+            matches.append(
+                {
+                    "name": definition["name"],
+                    "smarts": definition["smarts"],
+                    "reference": definition["reference"],
+                }
+            )
+    return matches
+
+
+def _descriptor_features(mol: Any) -> dict[str, float]:
+    return {name: float(fn(mol)) for name, fn in Descriptors._descList}
+
+
+def _build_training_context() -> dict[str, Any]:
+    train_df = safe_read_csv(DEFAULT_TRAIN_CSV)
+    smiles_col = _pick_smiles_column(train_df)
+
+    smiles_values: list[str] = []
+    labels: list[int] = []
+    scaffolds: list[str] = []
+    fingerprints: list[np.ndarray] = []
+
+    for _, row in train_df.iterrows():
+        smiles = str(row[smiles_col]).strip()
+        if not smiles:
+            continue
+        try:
+            mol = _mol_from_smiles(smiles)
+        except ValueError:
+            continue
+        smiles_values.append(Chem.MolToSmiles(mol))
+        labels.append(int(row.get("label", 0)))
+        scaffolds.append(_murcko_scaffold_smiles(mol))
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=FINGERPRINT_BITS)
+        fingerprints.append(_bitvect_to_array(fp))
+
+    if not fingerprints:
+        raise RuntimeError("Could not build a training fingerprint context from the model construction dataset.")
+
+    matrix = np.vstack(fingerprints).astype(np.uint8)
+    LIVE_ASSET_FINGERPRINTS.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        LIVE_ASSET_FINGERPRINTS,
+        fingerprints=matrix,
+        smiles=np.array(smiles_values, dtype=str),
+        labels=np.array(labels, dtype=np.int8),
+        scaffolds=np.array(scaffolds, dtype=str),
+        generated_at=np.array([datetime.now(UTC).isoformat()], dtype=str),
+    )
+    return {
+        "fingerprints": matrix,
+        "smiles": np.array(smiles_values, dtype=str),
+        "labels": np.array(labels, dtype=np.int8),
+        "scaffolds": np.array(scaffolds, dtype=str),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "asset_path": str(LIVE_ASSET_FINGERPRINTS),
+        "rebuilt": True,
+    }
+
+
+def load_training_context(force_rebuild: bool = False) -> dict[str, Any]:
+    current_mtime = DEFAULT_TRAIN_CSV.stat().st_mtime if DEFAULT_TRAIN_CSV.exists() else None
+    if (
+        not force_rebuild
+        and _CONTEXT_CACHE["context"] is not None
+        and _CONTEXT_CACHE["mtime"] == current_mtime
+    ):
+        return _CONTEXT_CACHE["context"]
+
+    if force_rebuild or not LIVE_ASSET_FINGERPRINTS.exists():
+        context = _build_training_context()
+    else:
+        with np.load(LIVE_ASSET_FINGERPRINTS, allow_pickle=False) as loaded:
+            context = {
+                "fingerprints": loaded["fingerprints"].astype(np.uint8),
+                "smiles": loaded["smiles"].astype(str),
+                "labels": loaded["labels"].astype(np.int8),
+                "scaffolds": loaded["scaffolds"].astype(str),
+                "generated_at": loaded["generated_at"][0].item(),
+                "asset_path": str(LIVE_ASSET_FINGERPRINTS),
+                "rebuilt": False,
+            }
+    _CONTEXT_CACHE["context"] = context
+    _CONTEXT_CACHE["mtime"] = current_mtime
+    return context
+
+
+def get_registry() -> EngineRegistry:
+    global _REGISTRY
+    if _REGISTRY is None:
+        _REGISTRY = EngineRegistry()
+        _REGISTRY.load()
+    return _REGISTRY
+
+
+def build_query_context(smiles: str) -> dict[str, Any]:
+    clean = smiles.strip()
+    if not clean:
+        raise ValueError("Please enter a SMILES string for live prediction.")
+    mol = _mol_from_smiles(clean)
+    canonical = Chem.MolToSmiles(mol)
+    fingerprint = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=FINGERPRINT_BITS)
+    fingerprint_array = _bitvect_to_array(fingerprint)
+    alerts = _query_alerts(mol)
+    return {
+        "input_smiles": clean,
+        "canonical_smiles": canonical,
+        "mol": mol,
+        "fingerprint": fingerprint_array,
+        "scaffold": _murcko_scaffold_smiles(mol),
+        "alerts": alerts,
+        "alert_flags": {f"alert_{item['name'].lower().replace(' ', '_')}": 1 for item in alerts},
+        "descriptors": _descriptor_features(mol),
+    }
+
+
+def _tanimoto_against_matrix(query_fp: np.ndarray, training_fps: np.ndarray) -> np.ndarray:
+    intersections = training_fps @ query_fp
+    query_on = int(query_fp.sum())
+    train_on = training_fps.sum(axis=1)
+    unions = train_on + query_on - intersections
+    return np.divide(intersections, unions, out=np.zeros_like(intersections, dtype=float), where=unions > 0)
+
+
+def _scaffold_context(query_scaffold: str, training_context: dict[str, Any]) -> dict[str, Any]:
+    if not query_scaffold:
+        return {
+            "query_scaffold": "",
+            "status": "no_murcko_scaffold",
+            "family_size": 0,
+            "toxic_count": 0,
+            "non_toxic_count": 0,
+            "toxic_ratio": None,
+            "scaffold_in_training": False,
+        }
+
+    scaffolds = training_context["scaffolds"]
+    labels = training_context["labels"]
+    mask = scaffolds == query_scaffold
+    family_size = int(mask.sum())
+    if family_size == 0:
+        return {
+            "query_scaffold": query_scaffold,
+            "status": "novel_scaffold",
+            "family_size": 0,
+            "toxic_count": 0,
+            "non_toxic_count": 0,
+            "toxic_ratio": None,
+            "scaffold_in_training": False,
+        }
+    toxic_count = int(labels[mask].sum())
+    non_toxic_count = int(family_size - toxic_count)
+    return {
+        "query_scaffold": query_scaffold,
+        "status": "matched_training_family",
+        "family_size": family_size,
+        "toxic_count": toxic_count,
+        "non_toxic_count": non_toxic_count,
+        "toxic_ratio": float(toxic_count / family_size) if family_size else None,
+        "scaffold_in_training": True,
+    }
+
+
+def compute_domain_gate(query_context: dict[str, Any], training_context: dict[str, Any]) -> dict[str, Any]:
+    similarities = _tanimoto_against_matrix(query_context["fingerprint"].astype(np.uint8), training_context["fingerprints"].astype(np.uint8))
+    top_indices = np.argsort(similarities)[::-1][:TOP_NEIGHBOURS]
+    neighbours = [
+        {
+            "rank": rank + 1,
+            "canonical_smiles": str(training_context["smiles"][index]),
+            "label": int(training_context["labels"][index]),
+            "similarity": float(similarities[index]),
+        }
+        for rank, index in enumerate(top_indices)
+    ]
+    max_similarity = float(similarities[top_indices[0]]) if len(top_indices) else 0.0
+    mean_top_similarity = float(np.mean(similarities[top_indices])) if len(top_indices) else 0.0
+    n_close_neighbours = int(np.sum(similarities >= ROUTE_A_SIMILARITY))
+    if max_similarity >= ROUTE_A_SIMILARITY:
+        route = "route_a"
+        badge = "In domain"
+    elif max_similarity >= ROUTE_B_SIMILARITY:
+        route = "route_b"
+        badge = "Borderline"
+    else:
+        route = "route_c"
+        badge = "Out of domain"
+    return {
+        "route": route,
+        "badge": badge,
+        "max_tanimoto": max_similarity,
+        "mean_tanimoto_top5": mean_top_similarity,
+        "n_close_neighbours": n_close_neighbours,
+        "nearest_neighbours": neighbours,
+    }
+
+
+def _build_engine_features(context: dict[str, Any]) -> dict[str, Any]:
+    features: dict[str, Any] = {}
+    features.update(context["descriptors"])
+    features.update({f"fp_{index}": int(bit) for index, bit in enumerate(context["fingerprint"])})
+    features.update(context["alert_flags"])
+    features["morgan_fp"] = context["fingerprint"].astype(np.uint8)
+    return features
+
+
+def build_explanation_stack(query_context: dict[str, Any], domain: dict[str, Any], training_context: dict[str, Any]) -> dict[str, Any]:
+    scaffold = _scaffold_context(query_context["scaffold"], training_context)
+    return {
+        "nearest_neighbours": domain["nearest_neighbours"],
+        "structural_alerts": query_context["alerts"],
+        "scaffold_context": scaffold,
+        "feature_importance": {
+            "status": "pending_serialized_model_support",
+            "message": "Local feature attributions will appear when the serialized ensemble models are available.",
+        },
+    }
+
+
+def build_live_payload(smiles: str) -> dict[str, Any]:
+    training_context = load_training_context()
+    query_context = build_query_context(smiles)
+    domain = compute_domain_gate(query_context, training_context)
+    explanations = build_explanation_stack(query_context, domain, training_context)
+
+    features = _build_engine_features(query_context)
+    registry = get_registry()
+    predictions = registry.predict_available(features)
+    domain_metrics = DomainMetrics(
+        max_tanimoto=domain["max_tanimoto"],
+        mean_tanimoto_top5=domain["mean_tanimoto_top5"],
+        n_close_neighbours=domain["n_close_neighbours"],
+        scaffold_in_training=bool(explanations["scaffold_context"]["scaffold_in_training"]),
+        n_alerts_fired=len(explanations["structural_alerts"]),
+        scaffold_toxic_ratio=explanations["scaffold_context"]["toxic_ratio"],
+    )
+    consensus = _ARBITRATOR.run(domain_metrics, predictions, registry.available_engines)
+
+    return {
+        "query_smiles": query_context["input_smiles"],
+        "canonical_smiles": query_context["canonical_smiles"],
+        "deployment_mode": DEPLOYMENT_MODE,
+        "asset_context": {
+            "training_fingerprint_asset": training_context["asset_path"],
+            "generated_at": training_context["generated_at"],
+            "rebuilt_this_session": bool(training_context.get("rebuilt", False)),
+            "training_molecule_count": int(len(training_context["smiles"])),
+        },
+        "domain": domain,
+        "consensus": consensus,
+        "engine_predictions": predictions,
+        "engine_statuses": registry.get_statuses(),
+        "explanations": explanations,
+    }
+
+
+def predict_live(smiles: str) -> dict[str, Any]:
+    return build_live_payload(smiles)
+
+
+def append_feedback(smiles: str, label: int, source: str | None = None, note: str | None = None) -> dict[str, Any]:
+    canonical = _canonicalize_smiles(smiles)
+    FEEDBACK_CSV.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = FEEDBACK_CSV.exists()
+    with FEEDBACK_CSV.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["timestamp_utc", "canonical_smiles", "confirmed_label", "source", "note"])
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(
+            {
+                "timestamp_utc": datetime.now(UTC).isoformat(),
+                "canonical_smiles": canonical,
+                "confirmed_label": int(label),
+                "source": (source or "").strip(),
+                "note": (note or "").strip(),
+            }
+        )
+    return {
+        "status": "recorded",
+        "canonical_smiles": canonical,
+        "confirmed_label": int(label),
+        "feedback_path": str(FEEDBACK_CSV),
+    }
+```
+
+==================================================
+
+<File: src/utils/engine_loader.py>
+
+```python
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+import joblib
+import numpy as np
+
+from src.config.settings import LIVE_ASSET_FINGERPRINTS, MODEL_ARTIFACTS_DIR
+
+
+@dataclass
+class EngineStatus:
+    engine_name: str
+    display_name: str
+    available: bool
+    artifact_path: str
+    reason_unavailable: str | None = None
+    notes: str | None = None
+
+
+@dataclass
+class EnginePrediction:
+    engine_name: str
+    display_name: str
+    available: bool
+    predicted_score: float | None = None
+    predicted_label: int | None = None
+    threshold: float | None = None
+    reason_unavailable: str | None = None
+    details: dict[str, Any] | None = None
+
+
+class BaseEngine:
+    def __init__(self, engine_name: str, display_name: str, artifact_path: Path, notes: str | None = None) -> None:
+        self.engine_name = engine_name
+        self.display_name = display_name
+        self.artifact_path = artifact_path
+        self.notes = notes
+        self.available = False
+        self.reason_unavailable: str | None = None
+
+    def status(self) -> EngineStatus:
+        return EngineStatus(
+            engine_name=self.engine_name,
+            display_name=self.display_name,
+            available=self.available,
+            artifact_path=str(self.artifact_path),
+            reason_unavailable=self.reason_unavailable,
+            notes=self.notes,
+        )
+
+    def load(self) -> None:
+        raise NotImplementedError
+
+    def predict(self, features: dict[str, Any]) -> EnginePrediction:
+        raise NotImplementedError
+
+
+class TanimotoSimilarityEngine(BaseEngine):
+    def __init__(self, asset_path: Path = LIVE_ASSET_FINGERPRINTS) -> None:
+        super().__init__(
+            engine_name="tanimoto_similarity",
+            display_name="Tanimoto Similarity Engine",
+            artifact_path=asset_path,
+            notes="Portable fallback using the bundled training fingerprint matrix.",
+        )
+        self.top_k = 5
+        self.training_fingerprints: np.ndarray | None = None
+        self.training_labels: np.ndarray | None = None
+        self.training_smiles: np.ndarray | None = None
+
+    def load(self) -> None:
+        if not self.artifact_path.exists():
+            self.available = False
+            self.reason_unavailable = f"Training fingerprint context not found at {self.artifact_path}."
+            return
+        with np.load(self.artifact_path, allow_pickle=False) as loaded:
+            self.training_fingerprints = loaded["fingerprints"].astype(np.uint8)
+            self.training_labels = loaded["labels"].astype(np.int8)
+            self.training_smiles = loaded["smiles"].astype(str)
+        self.available = True
+        self.reason_unavailable = None
+
+    def predict(self, features: dict[str, Any]) -> EnginePrediction:
+        if not self.available or self.training_fingerprints is None or self.training_labels is None or self.training_smiles is None:
+            return EnginePrediction(
+                engine_name=self.engine_name,
+                display_name=self.display_name,
+                available=False,
+                reason_unavailable=self.reason_unavailable or "Training fingerprint context is unavailable.",
+            )
+
+        fingerprint = np.asarray(features.get("morgan_fp"), dtype=np.uint8)
+        if fingerprint.size == 0:
+            return EnginePrediction(
+                engine_name=self.engine_name,
+                display_name=self.display_name,
+                available=False,
+                reason_unavailable="The live feature payload did not include a Morgan fingerprint array.",
+            )
+
+        intersections = self.training_fingerprints @ fingerprint
+        query_on = int(fingerprint.sum())
+        train_on = self.training_fingerprints.sum(axis=1)
+        unions = train_on + query_on - intersections
+        similarities = np.divide(intersections, unions, out=np.zeros_like(intersections, dtype=float), where=unions > 0)
+        top_indices = np.argsort(similarities)[::-1][: self.top_k]
+        top_scores = similarities[top_indices]
+        weights = top_scores + 1e-8
+        weighted_probability = float(np.sum(weights * self.training_labels[top_indices]) / np.sum(weights))
+        neighbours = [
+            {
+                "rank": rank + 1,
+                "canonical_smiles": str(self.training_smiles[index]),
+                "label": int(self.training_labels[index]),
+                "similarity": float(similarities[index]),
+            }
+            for rank, index in enumerate(top_indices)
+        ]
+        return EnginePrediction(
+            engine_name=self.engine_name,
+            display_name=self.display_name,
+            available=True,
+            predicted_score=weighted_probability,
+            predicted_label=int(weighted_probability >= 0.5),
+            threshold=0.5,
+            details={"nearest_neighbours": neighbours, "top_similarity": float(top_scores[0]) if len(top_scores) else None},
+        )
+
+
+class StackingEnsembleEngine(BaseEngine):
+    def __init__(self, engine_name: str, display_name: str, engine_dir: Path, notes: str | None = None) -> None:
+        super().__init__(engine_name=engine_name, display_name=display_name, artifact_path=engine_dir, notes=notes)
+        self.metadata: dict[str, Any] = {}
+        self.models: dict[str, Any] = {}
+
+    def load(self) -> None:
+        manifest_path = self.artifact_path / "engine.json"
+        if not manifest_path.exists():
+            self.available = False
+            self.reason_unavailable = f"Engine manifest not found at {manifest_path}."
+            return
+
+        metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            required = metadata.get("artifacts", {})
+            for key, relative_path in required.items():
+                self.models[key] = joblib.load(self.artifact_path / relative_path)
+            self.metadata = metadata
+        except FileNotFoundError as exc:
+            self.available = False
+            self.reason_unavailable = f"Missing serialized artifact: {exc}"
+            return
+        except Exception as exc:  # pragma: no cover
+            self.available = False
+            self.reason_unavailable = f"Failed to load serialized artifacts: {exc}"
+            return
+
+        self.available = True
+        self.reason_unavailable = None
+
+    def _vector_from_features(self, features: dict[str, Any], feature_order: list[str]) -> np.ndarray:
+        values = [float(features.get(name, 0.0)) for name in feature_order]
+        return np.asarray(values, dtype=float).reshape(1, -1)
+
+    def predict(self, features: dict[str, Any]) -> EnginePrediction:
+        if not self.available:
+            return EnginePrediction(
+                engine_name=self.engine_name,
+                display_name=self.display_name,
+                available=False,
+                reason_unavailable=self.reason_unavailable or "Serialized artifacts are unavailable.",
+            )
+
+        feature_order = list(self.metadata.get("feature_order", []))
+        if not feature_order:
+            return EnginePrediction(
+                engine_name=self.engine_name,
+                display_name=self.display_name,
+                available=False,
+                reason_unavailable="No feature order was defined in the engine manifest.",
+            )
+
+        x = self._vector_from_features(features, feature_order)
+        imputer = self.models.get("imputer")
+        scaler = self.models.get("scaler")
+        x_base = imputer.transform(x) if imputer is not None else x
+        x_scaled = scaler.transform(x_base) if scaler is not None else x_base
+
+        component_scores: dict[str, float] = {}
+        meta_feature_order = list(self.metadata.get("meta_feature_order", []))
+        for component_name in meta_feature_order:
+            model = self.models.get(component_name)
+            if model is None:
+                continue
+            component_scores[component_name] = float(model.predict_proba(x_scaled)[:, 1][0])
+
+        if not component_scores:
+            return EnginePrediction(
+                engine_name=self.engine_name,
+                display_name=self.display_name,
+                available=False,
+                reason_unavailable="No component models were available for this engine.",
+            )
+
+        meta_model = self.models.get("meta_model")
+        calibrator = self.models.get("calibrator")
+        threshold = float(self.metadata.get("threshold", 0.5))
+        if meta_model is not None:
+            meta_values = np.asarray([component_scores[name] for name in meta_feature_order if name in component_scores], dtype=float).reshape(1, -1)
+            raw_score = float(meta_model.predict_proba(meta_values)[:, 1][0])
+            if calibrator is not None:
+                score = float(calibrator.predict_proba(np.asarray([[raw_score]], dtype=float))[:, 1][0])
+            else:
+                score = raw_score
+        else:
+            score = float(sum(component_scores.values()) / len(component_scores))
+
+        return EnginePrediction(
+            engine_name=self.engine_name,
+            display_name=self.display_name,
+            available=True,
+            predicted_score=score,
+            predicted_label=int(score >= threshold),
+            threshold=threshold,
+            details={
+                "component_scores": component_scores,
+                "calibration": self.metadata.get("calibration"),
+            },
+        )
+
+
+class EngineRegistry:
+    def __init__(self, models_root: str | Path = MODEL_ARTIFACTS_DIR) -> None:
+        self.models_root = Path(models_root)
+        self.engines: dict[str, BaseEngine] = {
+            "descriptor_fp_ensemble": StackingEnsembleEngine(
+                "descriptor_fp_ensemble",
+                "Descriptor + Fingerprint Ensemble",
+                self.models_root / "descriptor_fp_ensemble",
+                notes="Loads imputer, scaler, base models, and logistic meta-learner when serialized artifacts exist.",
+            ),
+            "full_coverage_ensemble": StackingEnsembleEngine(
+                "full_coverage_ensemble",
+                "Full Coverage Ensemble",
+                self.models_root / "full_coverage_ensemble",
+                notes="Same stacking architecture as the descriptor engine with a broader feature set.",
+            ),
+            "tanimoto_similarity": TanimotoSimilarityEngine(),
+        }
+
+    def load(self) -> None:
+        for engine in self.engines.values():
+            engine.load()
+
+    @property
+    def available_engines(self) -> list[str]:
+        return [name for name, engine in self.engines.items() if engine.available]
+
+    def get_statuses(self) -> list[dict[str, Any]]:
+        return [asdict(engine.status()) for engine in self.engines.values()]
+
+    def predict(self, engine_name: str, features: dict[str, Any]) -> dict[str, Any]:
+        if engine_name not in self.engines:
+            return asdict(
+                EnginePrediction(
+                    engine_name=engine_name,
+                    display_name=engine_name,
+                    available=False,
+                    reason_unavailable="Engine is not registered.",
+                )
+            )
+        return asdict(self.engines[engine_name].predict(features))
+
+    def predict_available(self, features: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {name: asdict(engine.predict(features)) for name, engine in self.engines.items()}
+```
+
+==================================================
+
+<File: src/utils/consensus.py>
+
+```python
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import asdict, dataclass
+from typing import Any
+
+ROUTE_DECISION_THRESHOLDS = {
+    "route_a": 0.50,
+    "route_b": 0.55,
+    "route_c": 0.65,
+}
+
+BASE_ENGINE_WEIGHTS = {
+    "descriptor_fp_ensemble": 0.40,
+    "full_coverage_ensemble": 0.40,
+    "tanimoto_similarity": 0.20,
+}
+
+
+@dataclass(frozen=True)
+class DomainMetrics:
+    max_tanimoto: float
+    mean_tanimoto_top5: float
+    n_close_neighbours: int
+    scaffold_in_training: bool
+    n_alerts_fired: int = 0
+    scaffold_toxic_ratio: float | None = None
+
+
+def _label_from_probability(probability: float, threshold: float = 0.5) -> int:
+    return int(probability >= threshold)
+
+
+class ConsensusArbitrator:
+    def __init__(self, route_a_threshold: float = 0.5, route_b_threshold: float = 0.3) -> None:
+        self.route_a_threshold = float(route_a_threshold)
+        self.route_b_threshold = float(route_b_threshold)
+
+    def choose_route(self, domain: DomainMetrics) -> dict[str, Any]:
+        if domain.max_tanimoto >= self.route_a_threshold:
+            return {
+                "route": "route_a",
+                "badge": "In domain",
+                "warning": None,
+                "reason": "High structural similarity to training chemistry.",
+            }
+        if domain.max_tanimoto >= self.route_b_threshold:
+            return {
+                "route": "route_b",
+                "badge": "Borderline",
+                "warning": None,
+                "reason": "Intermediate similarity suggests a transitional applicability zone.",
+            }
+        return {
+            "route": "route_c",
+            "badge": "Out of domain",
+            "warning": "Novel chemistry detected. Predictions should be treated as advisory and confirmed experimentally.",
+            "reason": "Low similarity to the training chemistry space.",
+        }
+
+    def _pick_route_predictions(self, route: str, predictions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        available = [payload for payload in predictions.values() if payload.get("available")]
+        if route == "route_a":
+            preferred = [
+                payload
+                for payload in available
+                if payload.get("engine_name") == "descriptor_fp_ensemble"
+            ]
+            return preferred or available[:1]
+        if route == "route_b":
+            return available
+        return available
+
+    def _weighted_consensus_probability(
+        self,
+        route: str,
+        considered: list[dict[str, Any]],
+        domain_metrics: DomainMetrics,
+    ) -> tuple[float, list[dict[str, Any]]]:
+        if len(considered) == 1:
+            item = considered[0]
+            return float(item["predicted_score"]), [
+                {
+                    "engine_name": item["engine_name"],
+                    "probability": float(item["predicted_score"]),
+                    "base_weight": BASE_ENGINE_WEIGHTS.get(item["engine_name"], 1.0),
+                    "adjusted_weight": 1.0,
+                }
+            ]
+
+        similarity_factor = min(domain_metrics.max_tanimoto / 0.5, 1.0)
+        tanimoto_discount = max(0.0, min(domain_metrics.mean_tanimoto_top5, 1.0))
+
+        weighted_terms: list[tuple[float, float]] = []
+        weight_debug: list[dict[str, Any]] = []
+        for item in considered:
+            name = str(item["engine_name"])
+            probability = float(item["predicted_score"])
+            base_weight = BASE_ENGINE_WEIGHTS.get(name, 1.0 / max(len(considered), 1))
+            adjusted_weight = base_weight * (tanimoto_discount if name == "tanimoto_similarity" else similarity_factor)
+            weighted_terms.append((probability, adjusted_weight))
+            weight_debug.append(
+                {
+                    "engine_name": name,
+                    "probability": probability,
+                    "base_weight": base_weight,
+                    "adjusted_weight": adjusted_weight,
+                }
+            )
+
+        total_weight = sum(weight for _, weight in weighted_terms)
+        if total_weight <= 0:
+            fallback_probability = sum(probability for probability, _ in weighted_terms) / len(weighted_terms)
+            return float(fallback_probability), weight_debug
+
+        probability = sum(probability * weight for probability, weight in weighted_terms) / total_weight
+        return float(probability), weight_debug
+
+    def run(
+        self,
+        domain_metrics: DomainMetrics,
+        predictions: dict[str, dict[str, Any]],
+        available_engines: list[str] | None = None,
+    ) -> dict[str, Any]:
+        route_info = self.choose_route(domain_metrics)
+        considered = self._pick_route_predictions(route_info["route"], predictions)
+
+        if not considered:
+            return {
+                "route": route_info["route"],
+                "badge": route_info["badge"],
+                "warning": route_info["warning"],
+                "reason": route_info["reason"],
+                "consensus_label": None,
+                "consensus_probability": None,
+                "agreement": "no_live_models",
+                "engines_considered": [],
+                "engine_count": 0,
+                "available_engine_names": available_engines or [],
+                "domain_metrics": asdict(domain_metrics),
+                "message": "No serialized live model artifacts were available, so only the chemistry-native explanation stack is returned.",
+            }
+
+        decision_threshold = ROUTE_DECISION_THRESHOLDS[route_info["route"]]
+        consensus_probability, weight_debug = self._weighted_consensus_probability(
+            route_info["route"],
+            considered,
+            domain_metrics,
+        )
+        if route_info["route"] == "route_c" and domain_metrics.n_alerts_fired == 0:
+            tanimoto_result = predictions.get("tanimoto_similarity", {})
+            neighbours = (tanimoto_result.get("details") or {}).get("nearest_neighbours", [])
+            if neighbours:
+                toxic_ratio = sum(1 for item in neighbours if int(item.get("label", 0)) == 1) / len(neighbours)
+                max_similarity = max(float(item.get("similarity", 0.0)) for item in neighbours)
+            else:
+                toxic_ratio = 0.5
+                max_similarity = 0.0
+            if max_similarity < 0.20 and toxic_ratio < 0.8:
+                consensus_probability *= 0.75
+
+        labels = [_label_from_probability(float(item["predicted_score"]), threshold=decision_threshold) for item in considered]
+        label_counter = Counter(labels)
+        majority_label, majority_votes = label_counter.most_common(1)[0]
+        consensus_label = _label_from_probability(consensus_probability, threshold=decision_threshold)
+        unanimous = len(label_counter) == 1
+
+        disagreement = [
+            item["engine_name"]
+            for item in considered
+            if _label_from_probability(float(item["predicted_score"]), threshold=decision_threshold) != majority_label
+        ]
+        if unanimous:
+            agreement = "unanimous"
+        elif majority_votes > len(considered) / 2:
+            agreement = "majority"
+        else:
+            agreement = "split"
+
+        return {
+            "route": route_info["route"],
+            "badge": route_info["badge"],
+            "warning": route_info["warning"],
+            "reason": route_info["reason"],
+            "decision_threshold": float(decision_threshold),
+            "consensus_label": int(consensus_label),
+            "consensus_probability": float(consensus_probability),
+            "agreement": agreement,
+            "engines_considered": considered,
+            "engine_count": len(considered),
+            "dissenting_engines": disagreement,
+            "engine_weighting": weight_debug,
+            "effective_engine_labels": [
+                {
+                    "engine_name": item["engine_name"],
+                    "effective_label": _label_from_probability(float(item["predicted_score"]), threshold=decision_threshold),
+                    "predicted_score": float(item["predicted_score"]),
+                }
+                for item in considered
+            ],
+            "available_engine_names": available_engines or [],
+            "domain_metrics": asdict(domain_metrics),
+            "message": (
+                "All route-selected engines agreed after route-dependent thresholding."
+                if agreement == "unanimous"
+                else "Majority vote returned the final class after route-dependent thresholding; dissenting engines are flagged explicitly."
+            ),
+        }
+```
+
+==================================================
+
+<File: webapp/index.html>
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nephrotoxicity Predictor | Advanced Chemical Screening</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-chrome">
+      <!-- NAVIGATION SIDEBAR -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="app-logo">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <div class="app-title">
+            <h1>Nephrotoxicity <br/><span class="gradient-text">Predictor</span></h1>
+            <p class="tagline">Final Desktop Build</p>
+          </div>
+        </div>
+
+        <nav class="sidebar-menu">
+          <div class="menu-section">
+            <label>CORE</label>
+            <button class="menu-item active" data-page="predictor">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+              <span>Screening Terminal</span>
+            </button>
+            <button class="menu-item" data-page="analytics">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              <span>Deep Analytics</span>
+            </button>
+          </div>
+
+          <div class="menu-section">
+            <label>INTELLIGENCE</label>
+            <button class="menu-item" data-page="knowledge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+              <span>Intelligence Core</span>
+            </button>
+            <button class="menu-item" data-page="heritage">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <span>Research Heritage</span>
+            </button>
+          </div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="status-indicator">
+            <div class="pulse-ring"></div>
+            <span>Engine Online</span>
+          </div>
+          <button id="sync-trigger" class="btn-sync">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Resync Data
+          </button>
+        </div>
+      </aside>
+
+      <!-- MAIN STAGE -->
+      <main class="viewport">
+        <header class="view-header">
+          <div class="header-info">
+            <h2 id="page-title">Screening Terminal</h2>
+            <p id="page-subtitle" class="muted">Validated molecular screening against the integrated main model set.</p>
+          </div>
+          <div class="header-tools">
+            <div class="select-group">
+              <label>Predictive Engine</label>
+              <select id="engine-select"></select>
+            </div>
+          </div>
+        </header>
+
+        <!-- PAGE: PREDICTOR -->
+        <div id="page-predictor" class="page-content active">
+          <div class="bento-grid">
+            <!-- INPUT CARD -->
+            <section class="card bento-span-2 bento-row-1 input-card">
+              <div class="card-header">
+                <h3>Molecular Input</h3>
+                <div class="input-head-tools">
+                  <div id="screening-mode-toggle" class="mode-switcher">
+                    <button type="button" class="mode-chip active" data-mode="saved">Search saved</button>
+                    <button type="button" class="mode-chip" data-mode="live">Predict live</button>
+                  </div>
+                  <span class="badge">SMILES / Common Name</span>
+                </div>
+              </div>
+              <form id="search-form" class="search-form">
+                <div class="search-input-group">
+                  <input type="text" id="molecule-query" placeholder="Enter SMILES or Medicine Name (e.g. Gentamicin, Cisplatin)..." autocomplete="off">
+                  <button type="submit" class="btn-analyze">Analyze</button>
+                </div>
+              </form>
+              <p id="screening-mode-help" class="small-muted">Search saved predictions from the integrated evaluation outputs in this single project.</p>
+              <div class="sample-library">
+                <p id="sample-library-label" class="small-muted">Quick Access Verified Samples:</p>
+                <div id="example-chips" class="chip-container"></div>
+              </div>
+            </section>
+
+            <!-- RESULT HERO -->
+            <section class="card bento-row-2 hero-card" id="result-hero">
+              <div class="hero-overlay"></div>
+              <div class="hero-content">
+                <p class="eyebrow">Prediction Result</p>
+                <h4 id="hero-label">Standby</h4>
+                <div class="score-display" id="hero-score">--</div>
+                <div class="confidence-bar-container">
+                  <div class="confidence-bar" id="confidence-bar"></div>
+                </div>
+                <p id="hero-detail" class="muted">Enter a compound to initiate screening protocol.</p>
+              </div>
+            </section>
+
+            <!-- STRUCTURE CARD -->
+            <section class="card bento-row-2 structure-card">
+              <div class="card-header"><h3>Structural Profile</h3></div>
+              <div id="molecule-card" class="structure-viewer">
+                <div class="placeholder-icon">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><path d="M12 2L4 9V23L16 30L28 23V9L16 2Z"/></svg>
+                </div>
+              </div>
+            </section>
+
+            <!-- MATCHES -->
+            <section class="card bento-row-2 match-card">
+              <div class="card-header">
+                <h3>Candidate Index</h3>
+                <span class="count-pill" id="match-count">0</span>
+              </div>
+              <div id="match-list" class="match-list custom-scroll"></div>
+            </section>
+
+            <!-- PREDICTION MATRIX -->
+            <section class="card bento-span-2 prediction-card">
+              <div class="card-header"><h3>Validation Matrix</h3></div>
+              <div id="prediction-table-wrapper" class="table-container"></div>
+            </section>
+          </div>
+        </div>
+
+        <!-- PAGE: ANALYTICS -->
+        <div id="page-analytics" class="page-content">
+          <div class="analytics-layout">
+            <div class="stats-row grid-2">
+              <div class="card table-card">
+                <div class="card-header"><h3>Performance Benchmarks</h3></div>
+                <div id="stats-table-wrapper" class="table-container compact"></div>
+              </div>
+              <div class="card chart-card">
+                <div class="card-header"><h3>AUROC vs F1-Score</h3></div>
+                <div class="chart-box"><canvas id="aurocChart"></canvas></div>
+              </div>
+            </div>
+
+            <div class="stats-row grid-2">
+              <div class="card chart-card">
+                <div class="card-header">
+                  <h3>External Dataset Balance</h3>
+                  <p class="small-muted">Observed label split in the processed external evaluation set</p>
+                </div>
+                <div class="chart-box"><canvas id="balanceChart"></canvas></div>
+              </div>
+              <div class="card chart-card">
+                <div class="card-header">
+                  <h3>Generalization Gap</h3>
+                  <p class="small-muted">Internal AUROC minus external AUROC for the main model set</p>
+                </div>
+                <div class="chart-box"><canvas id="gapChart"></canvas></div>
+              </div>
+            </div>
+
+            <div class="card heatmap-card">
+              <div class="card-header">
+                <h3>Tanimoto Similarity Heatmap</h3>
+                <p class="small-muted">Morgan fingerprint similarity across a balanced subset of external compounds</p>
+              </div>
+              <div id="tanimoto-heatmap" class="heatmap-container"></div>
+              <div id="top-similarity-pairs" class="top-pairs"></div>
+            </div>
+
+            <div class="card chart-card">
+              <div class="card-header">
+                <h3>How To Read This Page</h3>
+                <p class="small-muted">Quick interpretation guide for the analysis visuals</p>
+              </div>
+              <div class="analysis-notes">
+                <p>The heatmap shows pairwise Tanimoto similarity values computed from Morgan fingerprints. Brighter cells indicate structurally more similar molecules.</p>
+                <p>The dataset balance chart shows how many external compounds are labelled toxic versus non-toxic.</p>
+                <p>The generalization gap chart highlights how much AUROC drops from internal evaluation to the external test set for each main model.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PAGE: KNOWLEDGE BASE -->
+        <div id="page-knowledge" class="page-content">
+          <div class="knowledge-hero">
+            <h2>Intelligence <span class="gradient-text">Core</span></h2>
+            <p>This project is not built around a single model. It is an evolving nephrotoxicity intelligence stack that combines similarity reasoning, descriptor learning, transformers, latent compression, and ensemble decision layers to support safer chemical screening.</p>
+          </div>
+          <div class="doc-grid">
+            <div class="card doc-card" data-model="ensemble">
+              <div class="doc-icon m-stack"></div>
+              <h3>Meta-Ensemble Decision Layer</h3>
+              <p>The strongest current engines are ensemble systems that blend KNN, LightGBM, and logistic meta-learning so the predictor can combine local chemical similarity with global decision boundaries.</p>
+              <button class="btn-detail">Open System Layer</button>
+            </div>
+            <div class="card doc-card" data-model="chemberta">
+              <div class="doc-icon m-bert"></div>
+              <h3>Chemical Language Models</h3>
+              <p>ChemBERTa-based pipelines treat SMILES as a language, helping the system read structure patterns that are difficult to capture with fingerprints alone.</p>
+              <button class="btn-detail">Open Transformer Layer</button>
+            </div>
+            <div class="card doc-card" data-model="autoencoder">
+              <div class="doc-icon m-ae"></div>
+              <h3>Latent Representation Models</h3>
+              <p>The autoencoder branch compresses high-dimensional fingerprints into a denser latent space, giving the project an unsupervised view of hidden toxicity structure.</p>
+              <button class="btn-detail">Open Latent Layer</button>
+            </div>
+            <div class="card doc-card" data-model="similarity">
+              <div class="doc-icon m-alert"></div>
+              <h3>Similarity and Retrieval Logic</h3>
+              <p>Similarity-driven models remain important because kidney-risk prediction is often shaped by structural neighborhoods, scaffold relationships, and chemical proximity.</p>
+              <button class="btn-detail">Open Similarity Layer</button>
+            </div>
+            <div class="card doc-card" data-model="evolution">
+              <div class="doc-icon m-stack"></div>
+              <h3>Model Constellation</h3>
+              <p>This project has explored tree models, GNNs, stacked ensembles, project-plus hybrids, noteworthy experiments, and SOTA-inspired baselines before converging on the current main set.</p>
+              <button class="btn-detail">Open Model Constellation</button>
+            </div>
+            <div class="card doc-card" data-model="impact">
+              <div class="doc-icon m-bert"></div>
+              <h3>Human and Clinical Relevance</h3>
+              <p>Nephrotoxicity prediction matters because earlier detection of kidney-risk compounds can support safer drug design, reduce failed candidates, and protect patients from avoidable harm.</p>
+              <button class="btn-detail">Open Real-World Impact</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- PAGE: HERITAGE -->
+        <div id="page-heritage" class="page-content">
+          <div class="heritage-intro">
+            <h2>Research <span class="gradient-text">Heritage</span></h2>
+            <p>This page tracks the evolution of the predictor across the many combinations tested in the project. It shows how the system moved from isolated experiments toward a more resilient multi-family nephrotoxicity platform.</p>
+          </div>
+          <div class="heritage-timeline">
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 01</div>
+              <h3>Tanimoto Gaussian Process</h3>
+              <p>The similarity-first stage focused on chemical distance and probabilistic scaffold reasoning. It established an interpretable baseline and kept structural analogy at the center of the project before the broader prototype families expanded.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 02</div>
+              <h3>Tree and Tabular Acceleration</h3>
+              <p>Modular LightGBM, HistGradientBoosting, and related tabular routes tested whether strong non-linear descriptor learners could outperform more classical baselines while staying efficient and explainable.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 03</div>
+              <h3>Graph Neural Network Exploration</h3>
+              <p>Virtual GIN, modular GIN, and NODE-style experiments pushed the project beyond fixed descriptors, aiming to learn directly from graph structure and internal molecular connectivity.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 04</div>
+              <h3>Project-Plus Hybrids</h3>
+              <p>The project-plus line introduced project-plus GIN, project-plus GIN hybrid, and project-plus ChemBERTa combinations, giving the system a broader search space across graph, sequence, and tabular representations.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 05</div>
+              <h3>Noteworthy and SOTA Tracks</h3>
+              <p>The nephro SOTA line plus noteworthy fixed and noteworthy final tracks acted as stress tests for promising ideas, helping identify what transferred well to external evaluation and what remained brittle.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 06</div>
+              <h3>Stacking and Full-Coverage Systems</h3>
+              <p>Modular stacking ensembles and the full-coverage meta-model families became the turning point: they combined multiple perspectives so the predictor could stay expressive, broad, and more stable on external molecules.</p>
+            </div>
+            <div class="card timeline-card highlight">
+              <div class="timeline-tag">Current Frontier</div>
+              <h3>Five Main Engines, One Safer-Screening Story</h3>
+              <p>The current dashboard centers on five main engines: Full Coverage Ensemble, Descriptor + Fingerprint Ensemble, Autoencoder Model, ChemBERTa Hybrid, and Similarity Model. Together they represent the most understandable and presentation-ready form of the project so far.</p>
+            </div>
+            <div class="card timeline-card highlight">
+              <div class="timeline-tag">Why It Matters</div>
+              <h3>From Model Experiments to Human Impact</h3>
+              <p>Every iteration in this project supports the same goal: help flag nephrotoxicity risk earlier, support medicinal chemistry decisions sooner, and reduce the chance that harmful compounds reach patients or late-stage development.</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- MODAL -->
+    <div id="detail-modal" class="modal-backdrop">
+      <div class="modal-box">
+        <button id="close-modal" class="btn-close">&times;</button>
+        <div id="modal-content"></div>
+      </div>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
+```
+
+==================================================
+
+<File: webapp/app.js>
+
+```javascript
+const state = {
+  overview: null,
+  activePage: "predictor",
+  activeModel: null,
+  screeningMode: "saved",
+  matches: [],
+  liveResult: null,
+  activeMatchIndex: 0,
+  charts: {},
+  searchStatus: "idle",
+  lastAnalyzedQuery: "",
+  lastResolvedQuery: "",
+  feedbackStatus: "",
+};
+
+const elements = {
+  navItems: document.querySelectorAll(".menu-item"),
+  pages: document.querySelectorAll(".page-content"),
+  pageTitle: document.getElementById("page-title"),
+  pageSubtitle: document.getElementById("page-subtitle"),
+  engineSelect: document.getElementById("engine-select"),
+  screeningModeToggle: document.getElementById("screening-mode-toggle"),
+  screeningModeHelp: document.getElementById("screening-mode-help"),
+  sampleLibraryLabel: document.getElementById("sample-library-label"),
+  searchForm: document.getElementById("search-form"),
+  queryInput: document.getElementById("molecule-query"),
+  exampleChips: document.getElementById("example-chips"),
+  heroLabel: document.getElementById("hero-label"),
+  heroScore: document.getElementById("hero-score"),
+  heroDetail: document.getElementById("hero-detail"),
+  confidenceBar: document.getElementById("confidence-bar"),
+  moleculeCard: document.getElementById("molecule-card"),
+  matchList: document.getElementById("match-list"),
+  matchCount: document.getElementById("match-count"),
+  predictionTableWrapper: document.getElementById("prediction-table-wrapper"),
+  statsTableWrapper: document.getElementById("stats-table-wrapper"),
+  heatmap: document.getElementById("tanimoto-heatmap"),
+  topPairs: document.getElementById("top-similarity-pairs"),
+  syncTrigger: document.getElementById("sync-trigger"),
+  modal: document.getElementById("detail-modal"),
+  modalContent: document.getElementById("modal-content"),
+  closeModal: document.getElementById("close-modal"),
+};
+
+const PAGE_META = {
+  predictor: {
+    title: "Screening Terminal",
+    subtitle: "Validated molecular screening against the integrated main model set.",
+  },
+  analytics: {
+    title: "Deep Analytics",
+    subtitle: "Real chemistry similarity and performance comparisons from the evaluation dataset.",
+  },
+  knowledge: {
+    title: "Intelligence Core",
+    subtitle: "Why these model families matter, how they complement each other, and why the project matters beyond the screen.",
+  },
+  heritage: {
+    title: "Research Heritage",
+    subtitle: "The experimental lineage behind the current predictor, from early baselines to full-coverage ensembles.",
+  },
+};
+
+function isFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function formatMetric(value, digits = 4) {
+  return isFiniteNumber(value) ? value.toFixed(digits) : "—";
+}
+
+function formatPct(value) {
+  return isFiniteNumber(value) ? `${Math.round(value * 100)}%` : "—";
+}
+
+function formatLabel(label) {
+  if (label === 1) return "Toxic";
+  if (label === 0) return "Safe";
+  return "Unknown";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function activeMatch() {
+  return state.matches[state.activeMatchIndex] ?? null;
+}
+
+function activeLiveResult() {
+  return state.liveResult;
+}
+
+function setPage(pageId) {
+  state.activePage = pageId;
+  elements.navItems.forEach((item) => item.classList.toggle("active", item.dataset.page === pageId));
+  elements.pages.forEach((page) => page.classList.toggle("active", page.id === `page-${pageId}`));
+  const meta = PAGE_META[pageId] || { title: pageId, subtitle: "" };
+  elements.pageTitle.textContent = meta.title;
+  elements.pageSubtitle.textContent = meta.subtitle;
+  if (pageId === "analytics") {
+    renderAnalytics();
+  }
+}
+
+function setPendingInput(query) {
+  if (typeof query === "string") {
+    elements.queryInput.value = query;
+  }
+  state.searchStatus = elements.queryInput.value.trim() ? "ready" : "idle";
+  state.lastAnalyzedQuery = "";
+  state.lastResolvedQuery = "";
+  state.matches = [];
+  state.liveResult = null;
+  state.activeMatchIndex = 0;
+  state.feedbackStatus = "";
+  renderResults();
+  renderHero();
+}
+
+function renderModeUI() {
+  const live = state.screeningMode === "live";
+  // The toggle updates labels and inputs so the terminal behaves differently in saved and live screening modes.
+  if (elements.screeningModeToggle) {
+    elements.screeningModeToggle.querySelectorAll("[data-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.mode === state.screeningMode);
+    });
+  }
+  if (elements.screeningModeHelp) {
+    elements.screeningModeHelp.textContent = live
+      ? "Run live nephrotoxicity analysis on any SMILES string with route-aware consensus, neighbours, scaffold context, and engine availability."
+      : "Search saved predictions from the integrated evaluation outputs in this single project.";
+  }
+  if (elements.sampleLibraryLabel) {
+    elements.sampleLibraryLabel.textContent = live ? "Quick Access Starter Queries:" : "Quick Access Verified Samples:";
+  }
+  if (elements.pageSubtitle && state.activePage === "predictor") {
+    elements.pageSubtitle.textContent = live
+      ? "Validated live molecular screening with route-aware consensus and chemistry-native explanation layers."
+      : PAGE_META.predictor.subtitle;
+  }
+  elements.queryInput.placeholder = live
+    ? "Enter any SMILES for live analysis (e.g. [NH3][Pt]([NH3])(Cl)Cl)..."
+    : "Enter SMILES or Medicine Name (e.g. Gentamicin, Cisplatin)...";
+  if (elements.engineSelect) {
+    elements.engineSelect.disabled = live;
+  }
+}
+
+function setScreeningMode(mode) {
+  state.screeningMode = mode === "live" ? "live" : "saved";
+  state.matches = [];
+  state.liveResult = null;
+  state.activeMatchIndex = 0;
+  state.searchStatus = elements.queryInput.value.trim() ? "ready" : "idle";
+  state.lastAnalyzedQuery = "";
+  state.lastResolvedQuery = "";
+  state.feedbackStatus = "";
+  renderModeUI();
+  renderExampleChips();
+  renderResults();
+  renderHero();
+}
+
+function renderExampleChips() {
+  const examples = state.overview?.example_queries ?? [];
+  const medicines = state.overview?.medicine_names ?? [];
+  elements.exampleChips.innerHTML = [
+    ...medicines.map((medicine) => `<button type="button" class="chip med-chip" data-query="${escapeHtml(medicine)}">${escapeHtml(medicine)}</button>`),
+    ...examples.map((example) => `<button type="button" class="chip" data-query="${escapeHtml(example)}">${escapeHtml(example)}</button>`),
+  ].join("");
+
+  elements.exampleChips.querySelectorAll("[data-query]").forEach((chip) => {
+    chip.addEventListener("click", () => setPendingInput(chip.dataset.query ?? ""));
+  });
+}
+
+function renderStatsTable() {
+  const models = state.overview?.models ?? [];
+  elements.statsTableWrapper.innerHTML = `
+    <table class="premium-table">
+      <thead>
+        <tr>
+          <th>Engine</th>
+          <th>Model Type</th>
+          <th>Ext AUROC</th>
+          <th>Ext F1</th>
+          <th>Int AUROC</th>
+          <th>Gap</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${models
+          .map(
+            (model) => `
+              <tr>
+                <td class="primary-cell">${escapeHtml(model.display_name)}</td>
+                <td>${escapeHtml(model.variant_display ?? model.variant ?? "Main Model")}</td>
+                <td><strong>${formatMetric(model.external.roc_auc)}</strong></td>
+                <td>${formatMetric(model.external.f1)}</td>
+                <td>${formatMetric(model.internal.roc_auc)}</td>
+                <td>${formatMetric(model.gap_auc)}</td>
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function destroyChart(key) {
+  if (state.charts[key]) {
+    state.charts[key].destroy();
+    state.charts[key] = null;
+  }
+}
+
+function renderPerformanceChart() {
+  const models = state.overview?.models ?? [];
+  const ctx = document.getElementById("aurocChart");
+  if (!ctx) return;
+  destroyChart("performance");
+  state.charts.performance = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: models.map((model) => model.display_name),
+      datasets: [
+        {
+          label: "External AUROC",
+          data: models.map((model) => model.external.roc_auc),
+          backgroundColor: "#10b981",
+          borderRadius: 10,
+        },
+        {
+          label: "External F1",
+          data: models.map((model) => model.external.f1),
+          backgroundColor: "rgba(16, 185, 129, 0.32)",
+          borderRadius: 10,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: "#94a3b8", font: { family: "Outfit" } },
+        },
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          max: 1,
+          grid: { color: "#1e293b" },
+          ticks: { color: "#64748b" },
+        },
+        x: {
+          grid: { display: false },
+          ticks: { color: "#64748b" },
+        },
+      },
+    },
+  });
+}
+
+function renderDatasetBalanceChart() {
+  const balance = state.overview?.analytics?.dataset_balance;
+  const ctx = document.getElementById("balanceChart");
+  if (!ctx || !balance) return;
+  destroyChart("balance");
+  state.charts.balance = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: balance.labels,
+      datasets: [
+        {
+          data: balance.counts,
+          backgroundColor: ["#10b981", "#ef4444"],
+          borderColor: ["#111622", "#111622"],
+          borderWidth: 4,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: "68%",
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { color: "#94a3b8", font: { family: "Outfit" } },
+        },
+      },
+    },
+  });
+}
+
+function renderGapChart() {
+  const gaps = state.overview?.analytics?.generalization_gap ?? [];
+  const ctx = document.getElementById("gapChart");
+  if (!ctx || gaps.length === 0) return;
+  destroyChart("gap");
+  state.charts.gap = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: gaps.map((row) => row.display_name),
+      datasets: [
+        {
+          label: "Internal - External AUROC",
+          data: gaps.map((row) => row.gap_auc),
+          backgroundColor: gaps.map((row) => (row.gap_auc > 0.08 ? "#f59e0b" : "#10b981")),
+          borderRadius: 10,
+        },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          grid: { color: "#1e293b" },
+          ticks: { color: "#64748b" },
+        },
+        y: {
+          grid: { display: false },
+          ticks: { color: "#64748b" },
+        },
+      },
+    },
+  });
+}
+
+function heatmapColor(value) {
+  const clamped = Math.max(0, Math.min(1, value));
+  const red = Math.round(20 + (16 * clamped));
+  const green = Math.round(24 + (161 * clamped));
+  const blue = Math.round(35 + (88 * clamped));
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
+function renderHeatmap() {
+  if (!elements.heatmap) return;
+  const heatmap = state.overview?.analytics?.tanimoto_heatmap;
+  const topPairs = state.overview?.analytics?.tanimoto_heatmap?.top_pairs ?? [];
+
+  if (!heatmap || !heatmap.matrix?.length) {
+    elements.heatmap.innerHTML = `<p class="muted">Heatmap data is not available yet.</p>`;
+    if (elements.topPairs) {
+      elements.topPairs.innerHTML = "";
+    }
+    return;
+  }
+
+  const labels = heatmap.labels;
+  let html = `<div class="heatmap-grid" style="grid-template-columns: 110px repeat(${labels.length}, minmax(46px, 1fr));">`;
+  html += `<div class="heatmap-corner"></div>`;
+  labels.forEach((label) => {
+    html += `<div class="heatmap-axis x" title="${escapeHtml(label.smiles)}">${escapeHtml(label.short_label)}</div>`;
+  });
+
+  labels.forEach((rowLabel, rowIndex) => {
+    html += `<div class="heatmap-axis y" title="${escapeHtml(rowLabel.smiles)}">${escapeHtml(rowLabel.short_label)}</div>`;
+    heatmap.matrix[rowIndex].forEach((value, colIndex) => {
+      const labelText = `${rowLabel.short_label} vs ${labels[colIndex].short_label}: ${value.toFixed(3)}`;
+      html += `
+        <div
+          class="heatmap-cell ${rowIndex === colIndex ? "diagonal" : ""}"
+          title="${escapeHtml(labelText)}"
+          style="background:${heatmapColor(value)}"
+        >
+          <span>${value.toFixed(2)}</span>
+        </div>
+      `;
+    });
+  });
+
+  html += `</div>`;
+  html += `
+    <div class="heatmap-legend">
+      <span>Low Similarity</span>
+      <div class="heatmap-swatch"></div>
+      <span>High Similarity</span>
+    </div>
+  `;
+  elements.heatmap.innerHTML = html;
+
+  if (elements.topPairs) {
+    elements.topPairs.innerHTML = `
+      <div class="pair-grid">
+        ${topPairs
+          .map(
+            (pair) => `
+              <div class="pair-card">
+                <div class="pair-score">${pair.similarity.toFixed(3)}</div>
+                <div class="pair-label">${escapeHtml(pair.left)} / ${escapeHtml(pair.right)}</div>
+                <p>${escapeHtml(pair.left_smiles)}</p>
+                <p>${escapeHtml(pair.right_smiles)}</p>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>
+    `;
+  }
+}
+
+function renderAnalytics() {
+  renderStatsTable();
+  renderPerformanceChart();
+  renderDatasetBalanceChart();
+  renderGapChart();
+  renderHeatmap();
+}
+
+function renderHero() {
+  if (state.screeningMode === "live") {
+    const result = activeLiveResult();
+    if (!result) {
+      if (state.searchStatus === "ready") {
+        elements.heroLabel.textContent = "Ready for live analysis";
+        elements.heroScore.textContent = "--";
+        elements.confidenceBar.style.width = "0%";
+        elements.confidenceBar.style.backgroundColor = "#10b981";
+        elements.heroDetail.textContent = "Input captured. Click Analyze to generate a live routed consensus dossier.";
+        return;
+      }
+      elements.heroLabel.textContent = "Standby";
+      elements.heroScore.textContent = "--";
+      elements.confidenceBar.style.width = "0%";
+      elements.confidenceBar.style.backgroundColor = "#10b981";
+      elements.heroDetail.textContent = "Awaiting a SMILES query for live analysis.";
+      return;
+    }
+
+    // Live mode renders the routed consensus dossier returned by /api/predict-live.
+    const score = result.consensus?.consensus_probability ?? result.domain?.max_tanimoto ?? 0;
+    const label = result.consensus?.consensus_label;
+    const route = result.consensus?.route ?? "route";
+    const toxic = label === 1;
+    const color = route === "route_c" ? "#ef4444" : route === "route_b" ? "#f59e0b" : toxic ? "#ef4444" : "#10b981";
+    elements.heroLabel.innerHTML = `<span class="${toxic ? "label-toxic" : "label-safe"}">${toxic ? "TOXIC" : "SAFE"}</span> <small class="muted">/ ${escapeHtml(route)}</small>`;
+    elements.heroScore.textContent = formatPct(score);
+    elements.confidenceBar.style.width = `${(score ?? 0) * 100}%`;
+    elements.confidenceBar.style.backgroundColor = color;
+    elements.heroDetail.textContent = result.consensus?.message ?? "Live analysis returned a routed consensus result.";
+    return;
+  }
+
+  const match = activeMatch();
+  if (!match) {
+    if (state.searchStatus === "ready") {
+      elements.heroLabel.textContent = "Ready to analyze";
+      elements.heroScore.textContent = "--";
+      elements.confidenceBar.style.width = "0%";
+      elements.confidenceBar.style.backgroundColor = "#10b981";
+      elements.heroDetail.textContent = "Input captured. Click Analyze to search the saved prediction outputs.";
+      return;
+    }
+    if (state.searchStatus === "no_results") {
+      elements.heroLabel.textContent = "No saved match";
+      elements.heroScore.textContent = "--";
+      elements.confidenceBar.style.width = "0%";
+      elements.confidenceBar.style.backgroundColor = "#f59e0b";
+      elements.heroDetail.textContent = `No evaluated molecule matched "${state.lastResolvedQuery || state.lastAnalyzedQuery}".`;
+      return;
+    }
+    elements.heroLabel.textContent = "Standby";
+    elements.heroScore.textContent = "--";
+    elements.confidenceBar.style.width = "0%";
+    elements.confidenceBar.style.backgroundColor = "#10b981";
+    elements.heroDetail.textContent = "Awaiting molecular or medicinal input.";
+    return;
+  }
+
+  const prediction =
+    match.model_predictions.find((item) => item.model_name === state.activeModel) ?? {
+      display_name: "Consensus",
+      predicted_label: match.consensus_label,
+      predicted_score: match.consensus_score,
+    };
+  // Saved mode replays the archived prediction outputs so the terminal stays identical to the evaluation view.
+  const toxic = prediction.predicted_label === 1;
+  elements.heroLabel.innerHTML = `<span class="${toxic ? "label-toxic" : "label-safe"}">${toxic ? "TOXIC" : "SAFE"}</span> <small class="muted">/ ${escapeHtml(prediction.display_name)}</small>`;
+  elements.heroScore.textContent = formatPct(prediction.predicted_score);
+  elements.confidenceBar.style.width = `${(prediction.predicted_score ?? 0) * 100}%`;
+  elements.confidenceBar.style.backgroundColor = toxic ? "#ef4444" : "#10b981";
+  elements.heroDetail.textContent = `Screening result for the selected molecule using ${prediction.display_name}.`;
+}
+
+function renderResults() {
+  if (state.screeningMode === "live") {
+    const result = activeLiveResult();
+    elements.matchCount.textContent = result ? String((result.explanations?.nearest_neighbours ?? []).length) : "0";
+
+    if (!result) {
+      const message =
+        state.searchStatus === "ready"
+          ? "Input is ready. Click Analyze to run live analysis."
+          : "No analyzed result yet.";
+      elements.matchList.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+      elements.moleculeCard.innerHTML = `<div class="empty-structure"><p>${escapeHtml(message)}</p></div>`;
+      elements.predictionTableWrapper.innerHTML = `<div class="empty-state">Live engine probabilities and explanation layers will appear here after you click Analyze.</div>`;
+      return;
+    }
+
+    const neighbours = result.explanations?.nearest_neighbours ?? [];
+    const alerts = result.explanations?.structural_alerts ?? [];
+    const scaffold = result.explanations?.scaffold_context ?? {};
+
+    elements.matchList.innerHTML = `
+      <div class="small-muted">Nearest training neighbours</div>
+      ${neighbours
+        .map(
+          (item) => `
+            <button class="match-button active">
+              <div class="match-top"><strong>${formatMetric(item.similarity, 3)}</strong> <span>#${item.rank}</span></div>
+              <div class="match-smiles">${escapeHtml(item.canonical_smiles)}</div>
+            </button>
+          `,
+        )
+        .join("")}
+      <div class="feedback-actions">
+        <button type="button" class="mode-chip" data-feedback-label="1">Confirm toxic</button>
+        <button type="button" class="mode-chip" data-feedback-label="0">Confirm non-toxic</button>
+      </div>
+      <p class="small-muted">${escapeHtml(state.feedbackStatus || "Feedback is optional and records a confirmed label locally.")}</p>
+    `;
+
+    elements.moleculeCard.innerHTML = `
+      <div class="molecule-profile">
+        <div class="smiles-box">${escapeHtml(result.canonical_smiles)}</div>
+        <div class="profile-meta">
+          <div class="p-stat">
+            <label>Applicability</label>
+            <strong>${escapeHtml(result.consensus?.badge ?? "Unknown")}</strong>
+          </div>
+          <div class="p-stat">
+            <label>Max Tanimoto</label>
+            <strong style="color:var(--accent-primary)">${formatMetric(result.domain?.max_tanimoto)}</strong>
+          </div>
+          <div class="p-stat">
+            <label>Scaffold Status</label>
+            <strong>${escapeHtml(scaffold.status ?? "Unknown")}</strong>
+          </div>
+          <div class="p-stat">
+            <label>Alerts</label>
+            <strong>${alerts.length > 0 ? escapeHtml(alerts.map((item) => item.name).join(", ")) : "None"}</strong>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const engineRows = Object.values(result.engine_predictions ?? {});
+  elements.predictionTableWrapper.innerHTML = `
+      <table class="compact-table">
+        <thead>
+          <tr>
+            <th>Engine</th>
+            <th>Status</th>
+            <th>Label</th>
+            <th>Prob</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${engineRows
+            .map(
+              (prediction) => `
+                <tr>
+                  <td>${escapeHtml(prediction.display_name)}</td>
+                  <td>${escapeHtml(prediction.available ? "Available" : prediction.reason_unavailable || "Unavailable")}</td>
+                  <td class="${prediction.predicted_label === 1 ? "label-toxic" : prediction.predicted_label === 0 ? "label-safe" : ""}">${prediction.available ? escapeHtml(formatLabel(prediction.predicted_label)) : "—"}</td>
+                  <td class="mono">${prediction.available ? formatMetric(prediction.predicted_score) : "—"}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+    return;
+  }
+
+  elements.matchCount.textContent = String(state.matches.length);
+
+  if (state.matches.length === 0) {
+    let message = "No analyzed result yet.";
+    if (state.searchStatus === "ready") {
+      message = "Input is ready. Click Analyze to query the saved predictions.";
+    } else if (state.searchStatus === "no_results") {
+      message = `No saved evaluated molecule matched "${state.lastResolvedQuery || state.lastAnalyzedQuery}".`;
+    }
+
+    elements.matchList.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+    elements.moleculeCard.innerHTML = `
+      <div class="empty-structure">
+        <p>${escapeHtml(message)}</p>
+      </div>
+    `;
+    elements.predictionTableWrapper.innerHTML = `
+      <div class="empty-state">Per-model predictions will appear here after you click Analyze.</div>
+    `;
+    return;
+  }
+
+  elements.matchList.innerHTML = state.matches
+    .map(
+      (match, index) => `
+        <button class="match-button ${index === state.activeMatchIndex ? "active" : ""}" data-match-index="${index}">
+          <div class="match-top"><strong>${formatPct(match.consensus_score)} Conf.</strong> <span>#${index + 1}</span></div>
+          <div class="match-smiles">${escapeHtml(match.canonical_smiles)}</div>
+        </button>
+      `,
+    )
+    .join("");
+
+  elements.matchList.querySelectorAll("[data-match-index]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeMatchIndex = Number(button.dataset.matchIndex ?? 0);
+      renderResults();
+      renderHero();
+    });
+  });
+
+  const match = activeMatch();
+  if (!match) {
+    return;
+  }
+
+  elements.moleculeCard.innerHTML = `
+    <div class="molecule-profile">
+      <div class="smiles-box">${escapeHtml(match.canonical_smiles)}</div>
+      <div class="profile-meta">
+        <div class="p-stat">
+          <label>Experimental Truth</label>
+          <strong>${match.true_label === 1 ? '<span class="label-toxic">Toxic</span>' : match.true_label === 0 ? '<span class="label-safe">Safe</span>' : "Unknown"}</strong>
+        </div>
+        <div class="p-stat">
+          <label>System Consensus</label>
+          <strong style="color:var(--accent-primary)">${formatPct(match.consensus_score)}</strong>
+        </div>
+      </div>
+    </div>
+  `;
+
+  elements.predictionTableWrapper.innerHTML = `
+    <table class="compact-table">
+      <thead>
+        <tr>
+          <th>Engine</th>
+          <th>Model Type</th>
+          <th>Label</th>
+          <th>Prob</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${match.model_predictions
+          .map(
+            (prediction) => `
+              <tr>
+                <td>${escapeHtml(prediction.display_name)}</td>
+                <td>${escapeHtml(prediction.variant_display ?? prediction.variant ?? "Main Model")}</td>
+                <td class="${prediction.predicted_label === 1 ? "label-toxic" : "label-safe"}">${prediction.predicted_label === 1 ? "Toxic" : "Safe"}</td>
+                <td class="mono">${formatMetric(prediction.predicted_score)}</td>
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function submitFeedback(label) {
+  const result = activeLiveResult();
+  if (!result) return;
+
+  state.feedbackStatus = "Recording confirmation...";
+  renderResults();
+  try {
+    const response = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        smiles: result.canonical_smiles,
+        label: Number(label),
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Feedback could not be recorded.");
+    }
+    state.feedbackStatus = `Confirmed ${Number(label) === 1 ? "toxic" : "non-toxic"} for ${payload.canonical_smiles}.`;
+  } catch (error) {
+    state.feedbackStatus = error instanceof Error ? error.message : "Feedback could not be recorded.";
+  }
+  renderResults();
+}
+
+async function runSearch(query) {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    setPendingInput("");
+    return;
+  }
+
+  try {
+    if (state.screeningMode === "live") {
+      // Live mode sends the query to the predictive API and renders the routed consensus dossier returned by the backend.
+      const response = await fetch("/api/predict-live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ smiles: trimmed }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Live analysis failed.");
+      }
+      state.matches = [];
+      state.liveResult = data;
+      state.activeMatchIndex = 0;
+      state.lastAnalyzedQuery = trimmed;
+      state.lastResolvedQuery = data.canonical_smiles || trimmed;
+      state.searchStatus = "results";
+      state.feedbackStatus = "";
+      renderResults();
+      renderHero();
+      return;
+    }
+
+    const response = await fetch(`/api/search?q=${encodeURIComponent(trimmed)}`);
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Saved search failed.");
+    }
+    state.matches = data.matches || [];
+    state.liveResult = null;
+    state.activeMatchIndex = 0;
+    state.lastAnalyzedQuery = trimmed;
+    state.lastResolvedQuery = data.resolved_query || trimmed;
+    state.searchStatus = state.matches.length > 0 ? "results" : "no_results";
+  } catch (error) {
+    state.matches = [];
+    state.liveResult = null;
+    state.activeMatchIndex = 0;
+    state.lastAnalyzedQuery = trimmed;
+    state.lastResolvedQuery = trimmed;
+    state.searchStatus = "no_results";
+    state.feedbackStatus = error instanceof Error ? error.message : "";
+  }
+
+  renderResults();
+  renderHero();
+}
+
+async function refreshResults() {
+  if (!elements.syncTrigger) return;
+  elements.syncTrigger.disabled = true;
+  elements.syncTrigger.textContent = "Resyncing...";
+  try {
+    await fetch("/api/run-main", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skip_data_prep: true, force_rerun: false }),
+    });
+    const response = await fetch("/api/overview");
+    state.overview = await response.json();
+    renderOverview();
+  } finally {
+    elements.syncTrigger.disabled = false;
+    elements.syncTrigger.textContent = "Resync Data";
+  }
+}
+
+const KNOWLEDGE_CORE = {
+  ensemble: `
+    <h2>Meta-Ensemble Decision Layer</h2>
+    <p>The project's most competitive systems are the <strong>Full Coverage Ensemble</strong> and the <strong>Descriptor + Fingerprint Ensemble</strong>. These are not single learners: they combine multiple predictive viewpoints so the final decision is less dependent on one representation.</p>
+    <p>Across this project, KNN contributes neighborhood awareness, LightGBM captures non-linear feature splits, and logistic meta-learning helps arbitrate between component signals. This is important for nephrotoxicity because harmful compounds do not always cluster into one simple rule family.</p>
+    <p>In practical terms, this layer represents the project's move from isolated experiments to a coordinated decision system. It is the clearest example of how the project became more mature, more robust, and more explainable.</p>
+  `,
+  chemberta: `
+    <h2>Chemical Language Models</h2>
+    <p>The <strong>ChemBERTa Hybrid</strong> line brings transformer-based reasoning into the project. Instead of only using handcrafted descriptors or bit vectors, it reads SMILES strings as chemical language and learns higher-order context from token sequences.</p>
+    <p>This matters because toxicity is often influenced by combinations of motifs, ordering, and local context that fixed fingerprints may only partially encode. The transformer branch gives the project a more modern representation-learning perspective.</p>
+    <p>It also connects the work to a future-facing pipeline where molecular screening can combine cheminformatics features with foundation-model style embeddings.</p>
+  `,
+  autoencoder: `
+    <h2>Latent Representation Models</h2>
+    <p>The <strong>Autoencoder Model</strong> explores unsupervised compression. It learns a latent fingerprint space where the model can retain the strongest chemical structure signals while reducing noise and redundancy.</p>
+    <p>This branch is important because not all predictive strength comes from direct supervision. Sometimes a model learns cleaner structure by first reconstructing the data and then classifying in a compressed space.</p>
+    <p>Within the project, the unsupervised family also helped compare PCA-style reduction with neural latent reduction, which made the evolution of the feature-learning story much easier to explain.</p>
+  `,
+  similarity: `
+    <h2>Similarity and Retrieval Logic</h2>
+    <p>The <strong>Similarity Model</strong> keeps a core scientific principle alive: molecules with related structure often share related behavior. Tanimoto similarity, scaffold relationships, and fingerprint overlap remain valuable signals in toxicity work.</p>
+    <p>This project did not abandon similarity methods when newer models were added. Instead, it treated similarity as a stable reference frame and then layered more expressive models on top of it.</p>
+    <p>That is one reason the dashboard now includes a real Tanimoto heatmap. It shows that chemistry space itself is part of the explanation, not just the prediction score.</p>
+  `,
+  evolution: `
+    <h2>Model Constellation</h2>
+    <p>This project investigated a wide experimental field: <strong>SOTA baselines</strong>, <strong>noteworthy fixed/final models</strong>, <strong>modular LightGBM</strong>, <strong>HistGradientBoosting</strong>, <strong>virtual GIN</strong>, <strong>NODE-style models</strong>, <strong>stacking ensembles</strong>, <strong>project-plus GIN</strong>, <strong>project-plus GIN hybrid</strong>, and <strong>project-plus ChemBERTa</strong>.</p>
+    <p>That combination history matters because it shows the final predictor was not chosen arbitrarily. It emerged from comparison, iteration, pruning, and consolidation. The current five engines are the outcome of a broader research search process.</p>
+    <p>In a more futuristic sense, this page presents the project as an intelligence constellation rather than one static model: multiple reasoning styles were tested, retained, archived, and recombined until the system became clearer and stronger.</p>
+  `,
+  impact: `
+    <h2>Human and Clinical Relevance</h2>
+    <p>Nephrotoxicity is not just a modeling problem. It is tied to kidney safety, failed compounds, patient risk, and the cost of discovering too late that a molecule is harmful. Earlier warning can influence which candidates move forward and which are redesigned.</p>
+    <p>That is why this predictor matters. Even as a project prototype, it demonstrates how data-driven screening could support medicinal chemistry, toxicology triage, and safer decision-making earlier in the pipeline.</p>
+    <p>The futuristic value of the work is that it points toward a workflow where model families, chemical similarity analysis, and structured evaluation outputs can work together as a decision support layer, not just a one-off classifier.</p>
+  `,
+};
+
+function showDetail(key) {
+  const html = KNOWLEDGE_CORE[key];
+  if (!html) return;
+  elements.modalContent.innerHTML = html;
+  elements.modal.style.display = "flex";
+}
+
+function renderOverview() {
+  const models = state.overview?.models ?? [];
+  elements.engineSelect.innerHTML = models
+    .map((model) => `<option value="${model.model_name}">${escapeHtml(model.display_name)}</option>`)
+    .join("");
+
+  if (!state.activeModel && models.length > 0) {
+    state.activeModel = state.overview.best_model?.model_name ?? models[0].model_name;
+  }
+  elements.engineSelect.value = state.activeModel ?? "";
+
+  renderModeUI();
+  renderExampleChips();
+  renderAnalytics();
+  renderResults();
+  renderHero();
+}
+
+function attachEvents() {
+  elements.navItems.forEach((item) => item.addEventListener("click", () => setPage(item.dataset.page)));
+  elements.searchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runSearch(elements.queryInput.value);
+  });
+  elements.queryInput.addEventListener("input", () => {
+    if (elements.queryInput.value.trim() !== state.lastAnalyzedQuery) {
+      setPendingInput(elements.queryInput.value);
+    }
+  });
+  elements.engineSelect.addEventListener("change", (event) => {
+    state.activeModel = event.target.value;
+    renderHero();
+  });
+  if (elements.screeningModeToggle) {
+    elements.screeningModeToggle.querySelectorAll("[data-mode]").forEach((button) => {
+      button.addEventListener("click", () => setScreeningMode(button.dataset.mode || "saved"));
+    });
+  }
+  if (elements.syncTrigger) {
+    elements.syncTrigger.addEventListener("click", refreshResults);
+  }
+  elements.closeModal.addEventListener("click", () => {
+    elements.modal.style.display = "none";
+  });
+  document.querySelectorAll(".doc-card").forEach((card) => {
+    card.addEventListener("click", () => showDetail(card.dataset.model));
+  });
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof HTMLElement ? event.target.closest("[data-feedback-label]") : null;
+    if (!target) return;
+    submitFeedback(target.dataset.feedbackLabel);
+  });
+}
+
+async function init() {
+  attachEvents();
+  const response = await fetch("/api/overview");
+  state.overview = await response.json();
+  renderOverview();
+}
+
+init();
+```
+
+==================================================
+
+<File: webapp/styles.css>
+
+```css
+:root {
+  --bg-pure: #05070a;
+  --bg-sidebar: #0a0d14;
+  --bg-surface: #111622;
+  --bg-elevated: #1a2133;
+  --accent-primary: #10b981;
+  --accent-secondary: #f59e0b;
+  --accent-glow: rgba(16, 185, 129, 0.25);
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-dim: #475569;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-accent: rgba(16, 185, 129, 0.3);
+  --font-display: 'Outfit', sans-serif;
+  --font-body: 'Space Grotesk', sans-serif;
+  --font-mono: 'Fira Code', monospace;
+  --sidebar-width: 300px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background-color: var(--bg-pure);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-chrome { display: flex; height: 100vh; }
+
+/* SIDEBAR */
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  padding: 30px 22px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 48px;
+}
+
+.app-logo { color: var(--accent-primary); filter: drop-shadow(0 0 8px var(--accent-glow)); }
+.app-title h1 { font-family: var(--font-display); font-size: 1.4rem; font-weight: 800; line-height: 1.1; }
+.gradient-text { background: linear-gradient(135deg, var(--accent-primary), #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.tagline { font-size: 0.65rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 4px; }
+
+.sidebar-menu {
+  display: grid;
+  gap: 18px;
+  padding: 10px 0 4px;
+}
+
+.menu-section {
+  margin-bottom: 0;
+  display: grid;
+  gap: 8px;
+}
+.menu-section label { display: block; font-size: 0.65rem; font-weight: 800; color: var(--text-dim); margin-bottom: 12px; padding-left: 12px; letter-spacing: 0.2em; }
+
+.menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 48px;
+  padding: 14px 16px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-weight: 600;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-bottom: 0;
+  position: relative;
+}
+
+.menu-item:hover { background: rgba(255, 255, 255, 0.03); color: var(--text-primary); }
+.menu-item.active { background: rgba(16, 185, 129, 0.1); color: var(--accent-primary); box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.08); }
+
+.menu-item::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 11px;
+  bottom: 11px;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #34d399 0%, #10b981 100%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.menu-item.active::before,
+.menu-item:hover::before {
+  opacity: 1;
+}
+
+.sidebar-footer { margin-top: auto; padding-top: 24px; border-top: 1px solid var(--border-subtle); }
+.status-indicator { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; font-weight: 700; color: var(--accent-primary); margin-bottom: 16px; padding-left: 8px; }
+.pulse-ring { width: 8px; height: 8px; background: var(--accent-primary); border-radius: 50%; box-shadow: 0 0 0 0 var(--accent-glow); animation: pulse 2s infinite; }
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.btn-sync { width: 100%; padding: 12px; background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); border-radius: 10px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: 0.2s; }
+.btn-sync:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
+
+/* VIEWPORT */
+.viewport { flex: 1; display: flex; flex-direction: column; overflow-y: auto; background: radial-gradient(circle at 100% 0%, rgba(16, 185, 129, 0.03), transparent 40%); min-width: 0; }
+.view-header { padding: 40px 48px; display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid var(--border-subtle); }
+.header-info h2 { font-family: var(--font-display); font-size: 2rem; font-weight: 800; margin-bottom: 6px; }
+.muted { color: var(--text-secondary); font-size: 0.95rem; }
+.small-muted { color: var(--text-secondary); font-size: 0.78rem; line-height: 1.5; }
+
+.select-group label { display: block; font-size: 0.65rem; font-weight: 800; color: var(--text-dim); text-transform: uppercase; margin-bottom: 8px; }
+select { background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 10px 16px; border-radius: 10px; font-weight: 600; min-width: 260px; font-family: var(--font-display); }
+
+/* BENTO GRID */
+.page-content { display: none; padding: 40px 48px; animation: slideIn 0.4s ease-out; min-width: 0; }
+.page-content.active { display: block; }
+
+@keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+.bento-grid { display: grid; grid-template-columns: 1fr 1fr 380px; grid-template-rows: auto auto auto; gap: 24px; min-width: 0; }
+.bento-span-2 { grid-column: span 2; }
+
+.card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 20px; padding: 24px; position: relative; overflow: hidden; min-width: 0; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; min-width: 0; }
+.card-header h3 { font-family: var(--font-display); font-size: 0.85rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+
+.input-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* INPUT */
+.search-form { margin-bottom: 24px; }
+.search-input-group { display: flex; gap: 12px; min-width: 0; }
+input { flex: 1; background: var(--bg-pure); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 16px 20px; border-radius: 14px; font-family: var(--font-mono); font-size: 0.95rem; transition: 0.2s; }
+input:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.1); }
+.btn-analyze { background: var(--accent-primary); color: var(--bg-pure); border: none; padding: 0 28px; border-radius: 14px; font-weight: 800; cursor: pointer; transition: 0.2s; }
+.btn-analyze:hover { transform: scale(1.02); filter: brightness(1.1); }
+
+.chip-container { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chip { background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); color: var(--text-secondary); padding: 6px 12px; border-radius: 8px; font-size: 0.7rem; cursor: pointer; font-family: var(--font-mono); }
+.chip:hover { border-color: var(--accent-primary); color: var(--text-primary); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--accent-primary);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.mode-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mode-chip {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.mode-chip:hover {
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.mode-chip.active {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.18);
+  color: var(--accent-primary);
+}
+
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* HERO */
+.hero-card { background: linear-gradient(145deg, #111622, #0a0d14); display: flex; flex-direction: column; justify-content: center; text-align: center; border-width: 2px; }
+.hero-content { position: relative; z-index: 1; }
+.eyebrow { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.2em; color: var(--accent-primary); margin-bottom: 12px; }
+.score-display { font-size: 4.5rem; font-weight: 900; line-height: 1; margin-bottom: 20px; font-family: var(--font-display); letter-spacing: -0.05em; }
+.confidence-bar-container { height: 6px; background: rgba(255,255,255,0.05); border-radius: 10px; margin: 0 40px 20px; overflow: hidden; }
+.confidence-bar { height: 100%; width: 0%; background: var(--accent-primary); transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+
+/* MATCHES */
+.match-list { max-height: 320px; overflow-y: auto; padding-right: 10px; }
+.match-button { width: 100%; background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 16px; border-radius: 12px; color: var(--text-primary); text-align: left; margin-bottom: 10px; cursor: pointer; transition: 0.2s; }
+.match-button:hover { background: rgba(255,255,255,0.05); }
+.match-button.active { border-color: var(--accent-primary); background: rgba(16, 185, 129, 0.05); }
+
+/* ANALYTICS */
+.analytics-layout { display: flex; flex-direction: column; gap: 24px; }
+.stats-row { display: grid; gap: 24px; }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.heatmap-container { padding: 20px; overflow: auto; }
+.chart-box { height: 240px; }
+.analysis-notes { display: grid; gap: 14px; color: var(--text-secondary); line-height: 1.7; }
+
+.heatmap-grid {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+  min-width: max-content;
+}
+
+.heatmap-corner {
+  height: 34px;
+}
+
+.heatmap-axis {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.heatmap-axis.y {
+  text-align: right;
+  padding-right: 8px;
+}
+
+.heatmap-cell {
+  min-width: 46px;
+  min-height: 46px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.heatmap-cell span {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: #f8fafc;
+}
+
+.heatmap-cell.diagonal {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.heatmap-legend {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.heatmap-swatch {
+  width: 160px;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(20, 24, 35), rgb(36, 120, 80), rgb(36, 185, 123));
+}
+
+.top-pairs {
+  margin-top: 20px;
+}
+
+.pair-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.pair-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.pair-score {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--accent-primary);
+  margin-bottom: 6px;
+}
+
+.pair-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.pair-card p {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.empty-state,
+.empty-structure {
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.molecule-profile {
+  display: grid;
+  gap: 18px;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.feedback-actions .mode-chip {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--border-subtle);
+}
+
+.feedback-actions .mode-chip:hover {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.smiles-box {
+  background: var(--bg-pure);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 14px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  word-break: break-word;
+}
+
+.profile-meta {
+  display: grid;
+  gap: 12px;
+}
+
+.p-stat label {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+.compact-table,
+.premium-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.compact-table th,
+.compact-table td,
+.premium-table th,
+.premium-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+}
+
+.compact-table th,
+.premium-table th {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.primary-cell {
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.match-top {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.match-smiles {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+/* KNOWLEDGE & HERITAGE */
+.knowledge-hero,
+.heritage-intro {
+  margin-bottom: 28px;
+  padding: 28px;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 34%),
+    linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+  border: 1px solid var(--border-subtle);
+}
+
+.knowledge-hero h2,
+.heritage-intro h2 {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  margin-bottom: 12px;
+}
+
+.knowledge-hero p,
+.heritage-intro p,
+.doc-card p,
+.timeline-card p {
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.doc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+.doc-card { cursor: pointer; transition: 0.3s; }
+.doc-card:hover { transform: translateY(-5px); border-color: var(--accent-primary); box-shadow: 0 0 30px rgba(16, 185, 129, 0.08); }
+.doc-icon { width: 40px; height: 40px; border-radius: 8px; background: rgba(16, 185, 129, 0.1); margin-bottom: 20px; }
+.doc-card h3,
+.timeline-card h3 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  margin-bottom: 10px;
+}
+
+.btn-detail {
+  margin-top: 18px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.heritage-timeline { display: flex; flex-direction: column; gap: 24px; max-width: 800px; margin: 0 auto; }
+.timeline-card { border-left: 4px solid var(--text-dim); background:
+  linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+}
+.timeline-card.highlight { border-left-color: var(--accent-secondary); }
+.timeline-tag { font-size: 0.65rem; font-weight: 800; color: var(--accent-secondary); text-transform: uppercase; margin-bottom: 8px; }
+
+/* MODAL */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 2000; padding: 24px; }
+.modal-box { background: var(--bg-surface); border: 1px solid var(--border-subtle); width: 100%; max-width: 700px; border-radius: 24px; padding: 48px; position: relative; }
+.modal-box h2 { font-family: var(--font-display); font-size: 1.8rem; margin-bottom: 16px; }
+.modal-box p { color: var(--text-secondary); line-height: 1.8; margin-bottom: 14px; }
+.btn-close { position: absolute; top: 24px; right: 24px; background: none; border: none; color: var(--text-dim); font-size: 2rem; cursor: pointer; }
+
+/* LABELS */
+.label-toxic { color: #ef4444; }
+.label-safe { color: var(--accent-primary); }
+.custom-scroll::-webkit-scrollbar { width: 4px; }
+.custom-scroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 10px; }
+
+@media (max-width: 1400px) {
+  .bento-grid { grid-template-columns: 1fr 1fr; }
+  .match-card { grid-column: span 2; }
+}
+
+@media (max-width: 1200px) {
+  .view-header {
+    padding: 32px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20px;
+  }
+
+  .header-tools,
+  .select-group,
+  select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .bento-grid,
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .bento-span-2,
+  .match-card {
+    grid-column: span 1;
+  }
+
+  .page-content {
+    padding: 32px;
+  }
+}
+
+@media (max-width: 900px) {
+  .sidebar { width: 88px; padding: 24px 12px; }
+  .app-title, .menu-item span, .menu-section label, .sidebar-footer span { display: none; }
+  .page-content,
+  .view-header { padding: 24px; }
+  .card { padding: 20px; }
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .input-head-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .search-input-group { flex-direction: column; }
+  .btn-analyze { min-height: 54px; }
+}
+
+@media (max-width: 640px) {
+  .mode-switcher {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .mode-chip {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .score-display {
+    font-size: 3.6rem;
+  }
+}
+```
+
+==================================================

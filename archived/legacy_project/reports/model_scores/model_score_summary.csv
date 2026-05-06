@@ -1,0 +1,6 @@
+model_group,best_primary_score,avg_primary_score,score_csv_count
+confirmed_models,0.8603508771929824,0.8207727061364102,256
+nephrotox_fixed,0.9871431028551771,0.8732861916260997,3
+nephrotox_project_plus,0.7278508771929824,0.7278508771929824,1
+nephrotox_final,,,0
+nephrotox_modular,,,0

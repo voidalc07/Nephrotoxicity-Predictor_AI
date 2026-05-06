@@ -1,0 +1,3 @@
+model,variant,external_auroc,external_accuracy,external_f1,external_kappa,external_recall,external_specificity
+baseline,ens_r2_b1024_dice_k31_25_15_isotonic_thr040,0.8516008771929825,0.7615894039735099,0.7313432835820896,0.522487702037948,0.6533333333333333,0.868421052631579
+best_improved,meta_logreg_knn_lgbm_descriptor_fp_v4__cal_none__thr_kappa,0.8446929824561402,0.7715231788079471,0.7766990291262136,0.5432066289622517,0.8,0.743421052631579

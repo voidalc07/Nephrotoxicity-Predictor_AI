@@ -1,0 +1,12 @@
+{
+  "model": "meta_lightgbm",
+  "features": [
+    "k31",
+    "k25",
+    "k15",
+    "knn_mean",
+    "lgbm_morgan_r2_2048_plus_desc_prob",
+    "descriptor_logreg_prob"
+  ],
+  "best_lgbm_source": "lgbm_morgan_r2_2048_plus_desc"
+}

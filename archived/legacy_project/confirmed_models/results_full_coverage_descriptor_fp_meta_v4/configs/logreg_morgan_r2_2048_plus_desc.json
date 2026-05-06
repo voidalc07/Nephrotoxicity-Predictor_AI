@@ -1,0 +1,6 @@
+{
+  "model": "logistic",
+  "feature_set": "morgan_r2_2048_plus_descriptors",
+  "best_C": 0.1,
+  "selection_metric": "val_auroc"
+}

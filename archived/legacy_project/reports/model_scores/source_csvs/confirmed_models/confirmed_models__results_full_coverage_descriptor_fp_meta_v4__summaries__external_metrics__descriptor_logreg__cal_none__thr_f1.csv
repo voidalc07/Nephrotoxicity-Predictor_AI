@@ -1,0 +1,2 @@
+accuracy,precision,recall,f1,kappa,auroc,specificity,sensitivity,mcc,tp,fp,tn,fn
+0.6225165562913907,0.62,0.62,0.62,0.245,0.6466666666666667,0.625,0.62,0.245,93,57,95,57

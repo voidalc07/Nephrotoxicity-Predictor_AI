@@ -1,0 +1,8 @@
+{
+  "model": "blend",
+  "weights": {
+    "challenger": 0.3481802934181716,
+    "fpdesc_lgbm": 0.6508896773955001,
+    "desc_logreg": 0.0009300291863283348
+  }
+}

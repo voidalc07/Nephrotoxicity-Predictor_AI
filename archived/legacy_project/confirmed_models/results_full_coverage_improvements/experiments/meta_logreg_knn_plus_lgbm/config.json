@@ -1,0 +1,7 @@
+{
+  "meta_model": "logistic",
+  "base_models": [
+    "knn_31_25_15",
+    "lgbm_morgan_r2_only"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "model": "blend",
+  "weight_a": 0.7999999999999998,
+  "weight_b": 0.20000000000000018,
+  "a_source": "meta_logreg_knn_plus_lgbm__cal_none__thr_f1",
+  "b_source": "curated_descriptors_only"
+}

@@ -1,0 +1,7 @@
+{
+  "model": "blend",
+  "weight_a": 0.5,
+  "weight_b": 0.5,
+  "a_source": "meta_logreg_knn_plus_lgbm__cal_none__thr_f1",
+  "b_source": "morgan_r2_2048_plus_descriptors"
+}

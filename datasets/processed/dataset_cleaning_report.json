@@ -1,0 +1,120 @@
+{
+  "datasets": [
+    {
+      "blank_smiles_removed": 0,
+      "columns_written": [
+        "canonical SMILES",
+        "label"
+      ],
+      "conflicting_smiles_with_multiple_labels": 0,
+      "exact_duplicate_rows_removed": 0,
+      "invalid_labels_removed": 0,
+      "kind": "label",
+      "original_rows": 1527,
+      "processed_file": "model_construction_dataset.csv",
+      "processed_rows": 1527,
+      "raw_file": "model construction dataset.csv"
+    },
+    {
+      "blank_smiles_removed": 0,
+      "columns_written": [
+        "canonical SMILES",
+        "label"
+      ],
+      "conflicting_smiles_with_multiple_labels": 0,
+      "exact_duplicate_rows_removed": 2,
+      "invalid_labels_removed": 0,
+      "kind": "label",
+      "original_rows": 304,
+      "processed_file": "external_test_dataset.csv",
+      "processed_rows": 302,
+      "raw_file": "external test dataset.csv"
+    },
+    {
+      "aggregated_duplicate_scaffolds": 0,
+      "blank_scaffolds_removed": 0,
+      "columns_written": [
+        "scaffold",
+        "frequency"
+      ],
+      "invalid_frequency_removed": 0,
+      "kind": "scaffold",
+      "original_rows": 833,
+      "processed_file": "model_molecular_murcko_scaffolds.csv",
+      "processed_rows": 833,
+      "raw_file": "model molecular murcko scaffolds.csv"
+    },
+    {
+      "aggregated_duplicate_scaffolds": 0,
+      "blank_scaffolds_removed": 0,
+      "columns_written": [
+        "scaffold",
+        "frequency"
+      ],
+      "invalid_frequency_removed": 0,
+      "kind": "scaffold",
+      "original_rows": 635,
+      "processed_file": "model_molecular_carbon_scaffolds.csv",
+      "processed_rows": 635,
+      "raw_file": "model molecular carbon scaffolds.csv"
+    },
+    {
+      "aggregated_duplicate_scaffolds": 0,
+      "blank_scaffolds_removed": 0,
+      "columns_written": [
+        "scaffold",
+        "frequency"
+      ],
+      "invalid_frequency_removed": 0,
+      "kind": "scaffold",
+      "original_rows": 382,
+      "processed_file": "model_nephrotoxicity_molecular_murcko_scaffolds.csv",
+      "processed_rows": 382,
+      "raw_file": "model nephrotoxicity molecular murcko scaffolds.csv"
+    },
+    {
+      "aggregated_duplicate_scaffolds": 0,
+      "blank_scaffolds_removed": 0,
+      "columns_written": [
+        "scaffold",
+        "frequency"
+      ],
+      "invalid_frequency_removed": 0,
+      "kind": "scaffold",
+      "original_rows": 316,
+      "processed_file": "model_nephrotoxicity_molecular_carbon_scaffolds.csv",
+      "processed_rows": 316,
+      "raw_file": "model nephrotoxicity molecular carbon scaffolds.csv"
+    },
+    {
+      "aggregated_duplicate_scaffolds": 0,
+      "blank_scaffolds_removed": 0,
+      "columns_written": [
+        "scaffold",
+        "frequency"
+      ],
+      "invalid_frequency_removed": 0,
+      "kind": "scaffold",
+      "original_rows": 151,
+      "processed_file": "external_molecular_murcko_scaffolds.csv",
+      "processed_rows": 151,
+      "raw_file": "external molecular murcko scaffolds.csv"
+    },
+    {
+      "aggregated_duplicate_scaffolds": 0,
+      "blank_scaffolds_removed": 0,
+      "columns_written": [
+        "scaffold",
+        "frequency"
+      ],
+      "invalid_frequency_removed": 0,
+      "kind": "scaffold",
+      "original_rows": 103,
+      "processed_file": "external_molecular_carbon_scaffolds.csv",
+      "processed_rows": 103,
+      "raw_file": "external molecular carbon scaffolds.csv"
+    }
+  ],
+  "processed_dir": "/Users/rajee/Documents/Playground/KV6013_PORTABLE/datasets/processed",
+  "raw_dir": "/Users/rajee/Documents/Playground/KV6013_PORTABLE/datasets/raw"
+}

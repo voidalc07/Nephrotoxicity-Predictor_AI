@@ -1,0 +1,13 @@
+{
+  "colsample_bylevel": 0.012762766280849233,
+  "depth": 10,
+  "learning_rate": 0.19241966516320125,
+  "l2_leaf_reg": 1.1073203961638327,
+  "objective": "Logloss",
+  "eval_metric": "AUC",
+  "iterations": 1000,
+  "task_type": "CPU",
+  "thread_count": -1,
+  "verbose": false,
+  "random_seed": 42
+}

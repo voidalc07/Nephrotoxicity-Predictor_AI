@@ -1,0 +1,10 @@
+{
+  "blend_components": [
+    "distance_inverse_knn_r2",
+    "hybrid_knn_prob_logreg"
+  ],
+  "blend_weights": {
+    "distance_inverse_knn_r2": 0.25896118481418334,
+    "hybrid_knn_prob_logreg": 0.7410388151858165
+  }
+}

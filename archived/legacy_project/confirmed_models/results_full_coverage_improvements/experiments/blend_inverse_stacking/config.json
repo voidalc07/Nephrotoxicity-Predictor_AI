@@ -1,0 +1,10 @@
+{
+  "blend_components": [
+    "distance_inverse_knn_r2",
+    "stacking_combo_logreg"
+  ],
+  "blend_weights": {
+    "distance_inverse_knn_r2": 0.11612776258999334,
+    "stacking_combo_logreg": 0.8838722374100066
+  }
+}

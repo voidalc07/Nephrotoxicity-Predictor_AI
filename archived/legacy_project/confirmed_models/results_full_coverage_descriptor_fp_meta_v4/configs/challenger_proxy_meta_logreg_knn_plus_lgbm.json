@@ -1,0 +1,4 @@
+{
+  "model": "challenger_proxy",
+  "source": "meta_logreg_knn_plus_lgbm__cal_none__thr_f1"
+}

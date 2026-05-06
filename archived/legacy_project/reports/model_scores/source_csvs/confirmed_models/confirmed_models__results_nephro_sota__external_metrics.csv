@@ -1,0 +1,2 @@
+model_name,auroc,accuracy,kappa,n_train,n_test,overlap_removed,optuna_best_cv_auroc
+nephro_sota_catboost,0.7340692640692641,0.6743421052631579,0.3485150229457096,1463,304,64,0.8905078049953561

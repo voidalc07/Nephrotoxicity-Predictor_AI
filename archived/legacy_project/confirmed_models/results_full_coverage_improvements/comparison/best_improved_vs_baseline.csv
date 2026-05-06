@@ -1,0 +1,3 @@
+model,variant,external_auroc,external_accuracy,external_f1,external_kappa
+baseline,ens_r2_b1024_dice_k31_25_15_isotonic_thr040,0.8516008771929825,0.7615894039735099,0.7313432835820896,0.522487702037948
+best_improved,blend_inverse_stacking__cal_none__thr_kappa,0.853421052631579,0.7880794701986755,0.7837837837837838,0.576065976487103

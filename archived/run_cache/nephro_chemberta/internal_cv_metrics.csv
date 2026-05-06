@@ -1,0 +1,2 @@
+model_name,accuracy,precision,recall,f1,auroc,pr_auc,notes
+chemberta_hybrid_cb_lgbm,0.8402095612311722,0.8661971830985915,0.8049738219895288,0.8344640434192673,0.9208432544447724,0.9340076789442653,generated_internal_cv_estimate_5fold

@@ -1,0 +1,6 @@
+{
+  "model": "logistic",
+  "feature_set": "curated_descriptors_only",
+  "best_C": 10.0,
+  "selection_metric": "val_auroc"
+}

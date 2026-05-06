@@ -1,0 +1,12 @@
+{
+  "meta_model": "lightgbm_morgan_plus_knn_probs",
+  "best_params": {
+    "n_estimators": 500,
+    "learning_rate": 0.03,
+    "num_leaves": 31,
+    "min_child_samples": 20,
+    "subsample": 0.9,
+    "colsample_bytree": 0.8
+  },
+  "selection_metric": "val_auroc"
+}

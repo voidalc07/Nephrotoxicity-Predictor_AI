@@ -1,0 +1,10 @@
+{
+  "blend_components": [
+    "hybrid_knn_prob_logreg",
+    "stacking_combo_logreg"
+  ],
+  "blend_weights": {
+    "hybrid_knn_prob_logreg": 0.004941038883208867,
+    "stacking_combo_logreg": 0.9950589611167913
+  }
+}

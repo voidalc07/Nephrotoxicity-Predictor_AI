@@ -1,0 +1,15 @@
+{
+  "train_path": "noteworthy_models/nephrotox_fixed/data/model_construction_dataset.csv",
+  "external_path": "noteworthy_models/nephrotox_fixed/data/external_test_dataset.csv",
+  "seeds": [
+    13,
+    42
+  ],
+  "use_descriptors": true,
+  "threshold_range": [
+    0.3,
+    0.55,
+    0.01
+  ],
+  "full_coverage_only": true
+}

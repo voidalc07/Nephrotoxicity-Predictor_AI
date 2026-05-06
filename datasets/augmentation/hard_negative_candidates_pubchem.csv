@@ -1,0 +1,17 @@
+drug_name,canonical_smiles,label,primary_toxicity,source
+troglitazone,CC1=C(C2=C(CCC(O2)(C)COC3=CC=C(C=C3)CC4C(=O)NC(=O)S4)C(=C1O)C)C,0,hepatotoxic,PubChem
+bosentan,CC(C)(C)C1=CC=C(C=C1)S(=O)(=O)NC2=C(C(=NC(=N2)C3=NC=CC=N3)OCCO)OC4=CC=CC=C4OC,0,hepatotoxic,PubChem
+ketoconazole,CC(=O)N1CCN(CC1)C2=CC=C(C=C2)OC[C@@H]3CO[C@@](O3)(CN4C=CN=C4)C5=C(C=C(C=C5)Cl)Cl,0,hepatotoxic,PubChem
+isoniazid,C1=CN=CC=C1C(=O)NN,0,hepatotoxic,PubChem
+valproic_acid,CCCC(CCC)C(=O)O,0,hepatotoxic,PubChem
+diclofenac,C1=CC=C(C(=C1)CC(=O)O)NC2=C(C=CC=C2Cl)Cl,0,hepatotoxic_gi,PubChem
+amiodarone,CCCCC1=C(C2=CC=CC=C2O1)C(=O)C3=CC(=C(C(=C3)I)OCCN(CC)CC)I,0,cardiotoxic_hepatotoxic,PubChem
+dronedarone,CCCCC1=C(C2=C(O1)C=CC(=C2)NS(=O)(=O)C)C(=O)C3=CC=C(C=C3)OCCCN(CCCC)CCCC,0,cardiotoxic_hepatotoxic,PubChem
+doxorubicin,C[C@H]1[C@H]([C@H](C[C@@H](O1)O[C@H]2C[C@@](CC3=C2C(=C4C(=C3O)C(=O)C5=C(C4=O)C(=CC=C5)OC)O)(C(=O)CO)O)N)O,0,cardiotoxic,PubChem
+tolcapone,CC1=CC=C(C=C1)C(=O)C2=CC(=C(C(=C2)O)O)[N+](=O)[O-],0,hepatotoxic,PubChem
+ticlopidine,C1CN(CC2=C1SC=C2)CC3=CC=CC=C3Cl,0,hepatotoxic,PubChem
+lapatinib,CS(=O)(=O)CCNCC1=CC=C(O1)C2=CC3=C(C=C2)N=CN=C3NC4=CC(=C(C=C4)OCC5=CC(=CC=C5)F)Cl,0,hepatotoxic,PubChem
+pazopanib,CC1=C(C=C(C=C1)NC2=NC=CC(=N2)N(C)C3=CC4=NN(C(=C4C=C3)C)C)S(=O)(=O)N,0,hepatotoxic,PubChem
+sunitinib,CCN(CC)CCNC(=O)C1=C(NC(=C1C)/C=C\\2/C3=C(C=CC(=C3)F)NC2=O)C,0,cardiotoxic,PubChem
+dabrafenib,CC(C)(C)C1=NC(=C(S1)C2=NC(=NC=C2)N)C3=C(C(=CC=C3)NS(=O)(=O)C4=C(C=CC=C4F)F)F,0,hepatotoxic,PubChem
+osimertinib,CN1C=C(C2=CC=CC=C21)C3=NC(=NC=C3)NC4=C(C=C(C(=C4)NC(=O)C=C)N(C)CCN(C)C)OC,0,cardiotoxic,PubChem

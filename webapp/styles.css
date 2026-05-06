@@ -1,0 +1,621 @@
+:root {
+  /* -----------------------------------------------------------------------
+     Design Tokens
+     The colour system preserves the original dark-laboratory visual identity:
+     deep neutral surfaces, emerald emphasis for active/healthy states, amber
+     for caution, and red for toxicity. This keeps the interface consistent
+     with the dissertation screenshots while making risk states legible.
+     ----------------------------------------------------------------------- */
+  --bg-pure: #05070a;
+  --bg-sidebar: #0a0d14;
+  --bg-surface: #111622;
+  --bg-elevated: #1a2133;
+  --accent-primary: #10b981;
+  --accent-secondary: #f59e0b;
+  --accent-glow: rgba(16, 185, 129, 0.25);
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-dim: #475569;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-accent: rgba(16, 185, 129, 0.3);
+  --font-display: 'Outfit', sans-serif;
+  --font-body: 'Space Grotesk', sans-serif;
+  --font-mono: 'Fira Code', monospace;
+  --sidebar-width: 300px;
+}
+
+/* Global reset keeps the layout stable across browsers and screen sizes. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background-color: var(--bg-pure);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-chrome { display: flex; height: 100vh; }
+
+/* -------------------------------------------------------------------------
+   Sidebar Navigation
+   The sidebar is a persistent control rail that separates page routing from
+   the scientific content area and keeps the project hierarchy explicit.
+   ------------------------------------------------------------------------- */
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  padding: 30px 22px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 48px;
+}
+
+.app-logo { color: var(--accent-primary); filter: drop-shadow(0 0 8px var(--accent-glow)); }
+.app-title h1 { font-family: var(--font-display); font-size: 1.4rem; font-weight: 800; line-height: 1.1; }
+.gradient-text { background: linear-gradient(135deg, var(--accent-primary), #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.tagline { font-size: 0.65rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em; margin-top: 4px; }
+
+.sidebar-menu {
+  display: grid;
+  gap: 18px;
+  padding: 10px 0 4px;
+}
+
+.menu-section {
+  margin-bottom: 0;
+  display: grid;
+  gap: 8px;
+}
+.menu-section label { display: block; font-size: 0.65rem; font-weight: 800; color: var(--text-dim); margin-bottom: 12px; padding-left: 12px; letter-spacing: 0.2em; }
+
+.menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 48px;
+  padding: 14px 16px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-weight: 600;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  margin-bottom: 0;
+  position: relative;
+}
+
+.menu-item:hover { background: rgba(255, 255, 255, 0.03); color: var(--text-primary); }
+.menu-item.active { background: rgba(16, 185, 129, 0.1); color: var(--accent-primary); box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.08); }
+
+.menu-item::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 11px;
+  bottom: 11px;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #34d399 0%, #10b981 100%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.menu-item.active::before,
+.menu-item:hover::before {
+  opacity: 1;
+}
+
+.sidebar-footer { margin-top: auto; padding-top: 24px; border-top: 1px solid var(--border-subtle); }
+.status-indicator { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; font-weight: 700; color: var(--accent-primary); margin-bottom: 16px; padding-left: 8px; }
+.pulse-ring { width: 8px; height: 8px; background: var(--accent-primary); border-radius: 50%; box-shadow: 0 0 0 0 var(--accent-glow); animation: pulse 2s infinite; }
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.btn-sync { width: 100%; padding: 12px; background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); border-radius: 10px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: 0.2s; }
+.btn-sync:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
+
+/* -------------------------------------------------------------------------
+   Main Viewport
+   The stage uses restrained gradients and strong negative space so benchmark
+   tables, prediction cards, and explanatory content remain the visual focus.
+   ------------------------------------------------------------------------- */
+.viewport { flex: 1; display: flex; flex-direction: column; overflow-y: auto; background: radial-gradient(circle at 100% 0%, rgba(16, 185, 129, 0.03), transparent 40%); min-width: 0; }
+.view-header { padding: 40px 48px; display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid var(--border-subtle); }
+.header-info h2 { font-family: var(--font-display); font-size: 2rem; font-weight: 800; margin-bottom: 6px; }
+.muted { color: var(--text-secondary); font-size: 0.95rem; }
+.small-muted { color: var(--text-secondary); font-size: 0.78rem; line-height: 1.5; }
+
+.select-group label { display: block; font-size: 0.65rem; font-weight: 800; color: var(--text-dim); text-transform: uppercase; margin-bottom: 8px; }
+select { background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 10px 16px; border-radius: 10px; font-weight: 600; min-width: 260px; font-family: var(--font-display); }
+
+/* -------------------------------------------------------------------------
+   Predictor Layout
+   A bento-style grid keeps input, result, structure, candidate neighbours, and
+   validation outputs visible together, which supports model interpretability.
+   ------------------------------------------------------------------------- */
+.page-content { display: none; padding: 40px 48px; animation: slideIn 0.4s ease-out; min-width: 0; }
+.page-content.active { display: block; }
+
+@keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+.bento-grid { display: grid; grid-template-columns: 1fr 1fr 380px; grid-template-rows: auto auto auto; gap: 24px; min-width: 0; }
+.bento-span-2 { grid-column: span 2; }
+
+.card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 20px; padding: 24px; position: relative; overflow: hidden; min-width: 0; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; min-width: 0; }
+.card-header h3 { font-family: var(--font-display); font-size: 0.85rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+
+.input-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* -------------------------------------------------------------------------
+   Input and Toggle Controls
+   These styles serve both saved benchmark lookup and live SMILES analysis
+   without visually fragmenting the screening terminal.
+   ------------------------------------------------------------------------- */
+.search-form { margin-bottom: 24px; }
+.search-input-group { display: flex; gap: 12px; min-width: 0; }
+input { flex: 1; background: var(--bg-pure); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 16px 20px; border-radius: 14px; font-family: var(--font-mono); font-size: 0.95rem; transition: 0.2s; }
+input:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.1); }
+.btn-analyze { background: var(--accent-primary); color: var(--bg-pure); border: none; padding: 0 28px; border-radius: 14px; font-weight: 800; cursor: pointer; transition: 0.2s; }
+.btn-analyze:hover { transform: scale(1.02); filter: brightness(1.1); }
+
+.chip-container { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chip { background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle); color: var(--text-secondary); padding: 6px 12px; border-radius: 8px; font-size: 0.7rem; cursor: pointer; font-family: var(--font-mono); }
+.chip:hover { border-color: var(--accent-primary); color: var(--text-primary); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--accent-primary);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.mode-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mode-chip {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.mode-chip:hover {
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.mode-chip.active {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.18);
+  color: var(--accent-primary);
+}
+
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* -------------------------------------------------------------------------
+   Prediction Hero
+   The hero card is intentionally high-contrast and numerically dominant so the
+   top-level risk call can be scanned immediately during demos and review.
+   ------------------------------------------------------------------------- */
+.hero-card { background: linear-gradient(145deg, #111622, #0a0d14); display: flex; flex-direction: column; justify-content: center; text-align: center; border-width: 2px; }
+.hero-content { position: relative; z-index: 1; }
+.eyebrow { font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.2em; color: var(--accent-primary); margin-bottom: 12px; }
+.score-display { font-size: 4.5rem; font-weight: 900; line-height: 1; margin-bottom: 20px; font-family: var(--font-display); letter-spacing: -0.05em; }
+.confidence-bar-container { height: 6px; background: rgba(255,255,255,0.05); border-radius: 10px; margin: 0 40px 20px; overflow: hidden; }
+.confidence-bar { height: 100%; width: 0%; background: var(--accent-primary); transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+
+/* Saved-match and live-neighbour list styling. */
+.match-list { max-height: 320px; overflow-y: auto; padding-right: 10px; }
+.match-button { width: 100%; background: rgba(255,255,255,0.02); border: 1px solid var(--border-subtle); padding: 16px; border-radius: 12px; color: var(--text-primary); text-align: left; margin-bottom: 10px; cursor: pointer; transition: 0.2s; }
+.match-button:hover { background: rgba(255,255,255,0.05); }
+.match-button.active { border-color: var(--accent-primary); background: rgba(16, 185, 129, 0.05); }
+
+/* -------------------------------------------------------------------------
+   Analytics Surfaces
+   Charts and heatmap panels are styled more like benchmark exhibits than
+   generic admin widgets, matching the dissertation presentation intent.
+   ------------------------------------------------------------------------- */
+.analytics-layout { display: flex; flex-direction: column; gap: 24px; }
+.stats-row { display: grid; gap: 24px; }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.heatmap-container { padding: 20px; overflow: auto; }
+.chart-box { height: 240px; }
+.analysis-notes { display: grid; gap: 14px; color: var(--text-secondary); line-height: 1.7; }
+
+.heatmap-grid {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+  min-width: max-content;
+}
+
+.heatmap-corner {
+  height: 34px;
+}
+
+.heatmap-axis {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.heatmap-axis.y {
+  text-align: right;
+  padding-right: 8px;
+}
+
+.heatmap-cell {
+  min-width: 46px;
+  min-height: 46px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.heatmap-cell span {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: #f8fafc;
+}
+
+.heatmap-cell.diagonal {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.heatmap-legend {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.heatmap-swatch {
+  width: 160px;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(20, 24, 35), rgb(36, 120, 80), rgb(36, 185, 123));
+}
+
+.top-pairs {
+  margin-top: 20px;
+}
+
+.pair-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.pair-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.pair-score {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--accent-primary);
+  margin-bottom: 6px;
+}
+
+.pair-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.pair-card p {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.empty-state,
+.empty-structure {
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.molecule-profile {
+  display: grid;
+  gap: 18px;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.feedback-actions .mode-chip {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--border-subtle);
+}
+
+.feedback-actions .mode-chip:hover {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.smiles-box {
+  background: var(--bg-pure);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 14px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  word-break: break-word;
+}
+
+.profile-meta {
+  display: grid;
+  gap: 12px;
+}
+
+.p-stat label {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+.compact-table,
+.premium-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.compact-table th,
+.compact-table td,
+.premium-table th,
+.premium-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: left;
+}
+
+.compact-table th,
+.premium-table th {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.primary-cell {
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.match-top {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.match-smiles {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+/* -------------------------------------------------------------------------
+   Narrative Pages
+   The knowledge and heritage sections use softer editorial cards so the
+   methodological story complements the harder numerical analytics.
+   ------------------------------------------------------------------------- */
+.knowledge-hero,
+.heritage-intro {
+  margin-bottom: 28px;
+  padding: 28px;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 34%),
+    linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+  border: 1px solid var(--border-subtle);
+}
+
+.knowledge-hero h2,
+.heritage-intro h2 {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  margin-bottom: 12px;
+}
+
+.knowledge-hero p,
+.heritage-intro p,
+.doc-card p,
+.timeline-card p {
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.doc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+.doc-card { cursor: pointer; transition: 0.3s; }
+.doc-card:hover { transform: translateY(-5px); border-color: var(--accent-primary); box-shadow: 0 0 30px rgba(16, 185, 129, 0.08); }
+.doc-icon { width: 40px; height: 40px; border-radius: 8px; background: rgba(16, 185, 129, 0.1); margin-bottom: 20px; }
+.doc-card h3,
+.timeline-card h3 {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  margin-bottom: 10px;
+}
+
+.btn-detail {
+  margin-top: 18px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.heritage-timeline { display: flex; flex-direction: column; gap: 24px; max-width: 800px; margin: 0 auto; }
+.timeline-card { border-left: 4px solid var(--text-dim); background:
+  linear-gradient(145deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+}
+.timeline-card.highlight { border-left-color: var(--accent-secondary); }
+.timeline-tag { font-size: 0.65rem; font-weight: 800; color: var(--accent-secondary); text-transform: uppercase; margin-bottom: 8px; }
+
+/* Modal overlay for model-family explainers. */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); display: none; justify-content: center; align-items: center; z-index: 2000; padding: 24px; }
+.modal-box { background: var(--bg-surface); border: 1px solid var(--border-subtle); width: 100%; max-width: 700px; border-radius: 24px; padding: 48px; position: relative; }
+.modal-box h2 { font-family: var(--font-display); font-size: 1.8rem; margin-bottom: 16px; }
+.modal-box p { color: var(--text-secondary); line-height: 1.8; margin-bottom: 14px; }
+.btn-close { position: absolute; top: 24px; right: 24px; background: none; border: none; color: var(--text-dim); font-size: 2rem; cursor: pointer; }
+
+/* Semantic labels and compact scroll affordances. */
+.label-toxic { color: #ef4444; }
+.label-safe { color: var(--accent-primary); }
+.custom-scroll::-webkit-scrollbar { width: 4px; }
+.custom-scroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 10px; }
+
+@media (max-width: 1400px) {
+  /* Collapse the three-column predictor before full mobile stacking. */
+  .bento-grid { grid-template-columns: 1fr 1fr; }
+  .match-card { grid-column: span 2; }
+}
+
+@media (max-width: 1200px) {
+  /* Tablet layout prioritises vertical readability over dense comparison. */
+  .view-header {
+    padding: 32px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20px;
+  }
+
+  .header-tools,
+  .select-group,
+  select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .bento-grid,
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .bento-span-2,
+  .match-card {
+    grid-column: span 1;
+  }
+
+  .page-content {
+    padding: 32px;
+  }
+}
+
+@media (max-width: 900px) {
+  /* Compact rail mode keeps navigation available on smaller screens. */
+  .sidebar { width: 88px; padding: 24px 12px; }
+  .app-title, .menu-item span, .menu-section label, .sidebar-footer span { display: none; }
+  .page-content,
+  .view-header { padding: 24px; }
+  .card { padding: 20px; }
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .input-head-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .search-input-group { flex-direction: column; }
+  .btn-analyze { min-height: 54px; }
+}
+
+@media (max-width: 640px) {
+  /* Final mobile refinements keep the toggle and score card readable. */
+  .mode-switcher {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .mode-chip {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .score-display {
+    font-size: 3.6rem;
+  }
+}

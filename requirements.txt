@@ -1,0 +1,16 @@
+numpy
+pandas
+scikit-learn
+scipy
+lightgbm
+catboost
+optuna
+rdkit
+matplotlib
+seaborn
+tqdm
+joblib
+torch
+transformers
+safetensors
+

@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nephrotoxicity Predictor | Advanced Chemical Screening</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-chrome">
+      <!-- -----------------------------------------------------------------
+           Navigation Sidebar
+           The dashboard is split into operational pages rather than a single
+           long report so predictive use, analytics review, and model-lineage
+           interpretation remain cognitively separate for a dissertation reader
+           or screening user.
+           ----------------------------------------------------------------- -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="app-logo">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <div class="app-title">
+            <h1>Nephrotoxicity <br/><span class="gradient-text">Predictor</span></h1>
+            <p class="tagline">Final Desktop Build</p>
+          </div>
+        </div>
+
+        <nav class="sidebar-menu">
+          <div class="menu-section">
+            <label>CORE</label>
+            <button class="menu-item active" data-page="predictor">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+              <span>Screening Terminal</span>
+            </button>
+            <button class="menu-item" data-page="analytics">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              <span>Deep Analytics</span>
+            </button>
+          </div>
+
+          <div class="menu-section">
+            <label>INTELLIGENCE</label>
+            <button class="menu-item" data-page="knowledge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+              <span>Intelligence Core</span>
+            </button>
+            <button class="menu-item" data-page="heritage">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <span>Research Heritage</span>
+            </button>
+          </div>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="status-indicator">
+            <div class="pulse-ring"></div>
+            <span>Engine Online</span>
+          </div>
+          <button id="sync-trigger" class="btn-sync">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Resync Data
+          </button>
+        </div>
+      </aside>
+
+      <!-- -----------------------------------------------------------------
+           Main Stage
+           The viewport hosts both the saved external-evaluation browser and
+           the live inference terminal, allowing the project to preserve its
+           benchmark evidence while also supporting arbitrary SMILES analysis.
+           ----------------------------------------------------------------- -->
+      <main class="viewport">
+        <header class="view-header">
+          <div class="header-info">
+            <h2 id="page-title">Screening Terminal</h2>
+            <p id="page-subtitle" class="muted">Validated molecular screening against the integrated main model set.</p>
+          </div>
+          <div class="header-tools">
+            <div class="select-group">
+              <label>Predictive Engine</label>
+              <select id="engine-select"></select>
+            </div>
+          </div>
+        </header>
+
+        <!-- -----------------------------------------------------------------
+             Page: Predictor
+             This page is the operational screening surface. Its layout keeps
+             molecular input, prediction summary, structure context, nearest
+             matches, and per-engine outputs visible together so model scores
+             are never shown without chemical context.
+             ----------------------------------------------------------------- -->
+        <div id="page-predictor" class="page-content active">
+          <div class="bento-grid">
+            <!-- Input card: accepts either archived-query search terms or live
+                 SMILES strings, depending on the selected screening mode. -->
+            <section class="card bento-span-2 bento-row-1 input-card">
+              <div class="card-header">
+                <h3>Molecular Input</h3>
+                <div class="input-head-tools">
+                  <div id="screening-mode-toggle" class="mode-switcher">
+                    <button type="button" class="mode-chip active" data-mode="saved">Search saved</button>
+                    <button type="button" class="mode-chip" data-mode="live">Predict live</button>
+                  </div>
+                  <span class="badge">SMILES / Common Name</span>
+                </div>
+              </div>
+              <form id="search-form" class="search-form">
+                <div class="search-input-group">
+                  <input type="text" id="molecule-query" placeholder="Enter SMILES or Medicine Name (e.g. Gentamicin, Cisplatin)..." autocomplete="off">
+                  <button type="submit" class="btn-analyze">Analyze</button>
+                </div>
+              </form>
+              <p id="screening-mode-help" class="small-muted">Search saved predictions from the integrated evaluation outputs in this single project.</p>
+              <div class="sample-library">
+                <p id="sample-library-label" class="small-muted">Quick Access Verified Samples:</p>
+                <div id="example-chips" class="chip-container"></div>
+              </div>
+            </section>
+
+            <!-- Result hero: presents the main decision state as a clear,
+                 high-salience risk signal suitable for rapid triage. -->
+            <section class="card bento-row-2 hero-card" id="result-hero">
+              <div class="hero-overlay"></div>
+              <div class="hero-content">
+                <p class="eyebrow">Prediction Result</p>
+                <h4 id="hero-label">Standby</h4>
+                <div class="score-display" id="hero-score">--</div>
+                <div class="confidence-bar-container">
+                  <div class="confidence-bar" id="confidence-bar"></div>
+                </div>
+                <p id="hero-detail" class="muted">Enter a compound to initiate screening protocol.</p>
+              </div>
+            </section>
+
+            <!-- Structure card: keeps canonical structural context visible so
+                 the prediction remains anchored to the queried molecule. -->
+            <section class="card bento-row-2 structure-card">
+              <div class="card-header"><h3>Structural Profile</h3></div>
+              <div id="molecule-card" class="structure-viewer">
+                <div class="placeholder-icon">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.2"><path d="M12 2L4 9V23L16 30L28 23V9L16 2Z"/></svg>
+                </div>
+              </div>
+            </section>
+
+            <!-- Candidate index: shows either saved benchmark matches or live
+                 nearest neighbours, depending on screening mode. -->
+            <section class="card bento-row-2 match-card">
+              <div class="card-header">
+                <h3>Candidate Index</h3>
+                <span class="count-pill" id="match-count">0</span>
+              </div>
+              <div id="match-list" class="match-list custom-scroll"></div>
+            </section>
+
+            <!-- Validation matrix: exposes per-engine probabilities rather than
+                 hiding the model spread behind a single label. -->
+            <section class="card bento-span-2 prediction-card">
+              <div class="card-header"><h3>Validation Matrix</h3></div>
+              <div id="prediction-table-wrapper" class="table-container"></div>
+            </section>
+          </div>
+        </div>
+
+        <!-- -----------------------------------------------------------------
+             Page: Analytics
+             This page translates the experimental results into benchmark
+             tables, similarity structure, and generalisation views so external
+             validation behaviour can be inspected visually.
+             ----------------------------------------------------------------- -->
+        <div id="page-analytics" class="page-content">
+          <div class="analytics-layout">
+            <div class="stats-row grid-2">
+              <div class="card table-card">
+                <div class="card-header"><h3>Performance Benchmarks</h3></div>
+                <div id="stats-table-wrapper" class="table-container compact"></div>
+              </div>
+              <div class="card chart-card">
+                <div class="card-header"><h3>AUROC vs F1-Score</h3></div>
+                <div class="chart-box"><canvas id="aurocChart"></canvas></div>
+              </div>
+            </div>
+
+            <div class="stats-row grid-2">
+              <div class="card chart-card">
+                <div class="card-header">
+                  <h3>External Dataset Balance</h3>
+                  <p class="small-muted">Observed label split in the processed external evaluation set</p>
+                </div>
+                <div class="chart-box"><canvas id="balanceChart"></canvas></div>
+              </div>
+              <div class="card chart-card">
+                <div class="card-header">
+                  <h3>Generalization Gap</h3>
+                  <p class="small-muted">Internal AUROC minus external AUROC for the main model set</p>
+                </div>
+                <div class="chart-box"><canvas id="gapChart"></canvas></div>
+              </div>
+            </div>
+
+            <div class="card heatmap-card">
+              <div class="card-header">
+                <h3>Tanimoto Similarity Heatmap</h3>
+                <p class="small-muted">Morgan fingerprint similarity across a balanced subset of external compounds</p>
+              </div>
+              <div id="tanimoto-heatmap" class="heatmap-container"></div>
+              <div id="top-similarity-pairs" class="top-pairs"></div>
+            </div>
+
+            <div class="card chart-card">
+              <div class="card-header">
+                <h3>How To Read This Page</h3>
+                <p class="small-muted">Quick interpretation guide for the analysis visuals</p>
+              </div>
+              <div class="analysis-notes">
+                <p>The heatmap shows pairwise Tanimoto similarity values computed from Morgan fingerprints. Brighter cells indicate structurally more similar molecules.</p>
+                <p>The dataset balance chart shows how many external compounds are labelled toxic versus non-toxic.</p>
+                <p>The generalization gap chart highlights how much AUROC drops from internal evaluation to the external test set for each main model.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- -----------------------------------------------------------------
+             Page: Intelligence Core
+             This page is intentionally narrative. It explains the scientific
+             roles of the model families rather than presenting raw scores.
+             ----------------------------------------------------------------- -->
+        <div id="page-knowledge" class="page-content">
+          <div class="knowledge-hero">
+            <h2>Intelligence <span class="gradient-text">Core</span></h2>
+            <p>This project is not built around a single model. It is an evolving nephrotoxicity intelligence stack that combines similarity reasoning, descriptor learning, transformers, latent compression, and ensemble decision layers to support safer chemical screening.</p>
+          </div>
+          <div class="doc-grid">
+            <div class="card doc-card" data-model="ensemble">
+              <div class="doc-icon m-stack"></div>
+              <h3>Meta-Ensemble Decision Layer</h3>
+              <p>The strongest current engines are ensemble systems that blend KNN, LightGBM, and logistic meta-learning so the predictor can combine local chemical similarity with global decision boundaries.</p>
+              <button class="btn-detail">Open System Layer</button>
+            </div>
+            <div class="card doc-card" data-model="chemberta">
+              <div class="doc-icon m-bert"></div>
+              <h3>Chemical Language Models</h3>
+              <p>ChemBERTa-based pipelines treat SMILES as a language, helping the system read structure patterns that are difficult to capture with fingerprints alone.</p>
+              <button class="btn-detail">Open Transformer Layer</button>
+            </div>
+            <div class="card doc-card" data-model="autoencoder">
+              <div class="doc-icon m-ae"></div>
+              <h3>Latent Representation Models</h3>
+              <p>The autoencoder branch compresses high-dimensional fingerprints into a denser latent space, giving the project an unsupervised view of hidden toxicity structure.</p>
+              <button class="btn-detail">Open Latent Layer</button>
+            </div>
+            <div class="card doc-card" data-model="similarity">
+              <div class="doc-icon m-alert"></div>
+              <h3>Similarity and Retrieval Logic</h3>
+              <p>Similarity-driven models remain important because kidney-risk prediction is often shaped by structural neighborhoods, scaffold relationships, and chemical proximity.</p>
+              <button class="btn-detail">Open Similarity Layer</button>
+            </div>
+            <div class="card doc-card" data-model="evolution">
+              <div class="doc-icon m-stack"></div>
+              <h3>Model Constellation</h3>
+              <p>This project has explored tree models, GNNs, stacked ensembles, project-plus hybrids, noteworthy experiments, and SOTA-inspired baselines before converging on the current main set.</p>
+              <button class="btn-detail">Open Model Constellation</button>
+            </div>
+            <div class="card doc-card" data-model="impact">
+              <div class="doc-icon m-bert"></div>
+              <h3>Human and Clinical Relevance</h3>
+              <p>Nephrotoxicity prediction matters because earlier detection of kidney-risk compounds can support safer drug design, reduce failed candidates, and protect patients from avoidable harm.</p>
+              <button class="btn-detail">Open Real-World Impact</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- -----------------------------------------------------------------
+             Page: Research Heritage
+             The heritage timeline preserves the methodological lineage of the
+             project, from early similarity and graph experiments through to
+             the final shortlisted five-engine presentation.
+             ----------------------------------------------------------------- -->
+        <div id="page-heritage" class="page-content">
+          <div class="heritage-intro">
+            <h2>Research <span class="gradient-text">Heritage</span></h2>
+            <p>This page tracks the evolution of the predictor across the many combinations tested in the project. It shows how the system moved from isolated experiments toward a more resilient multi-family nephrotoxicity platform.</p>
+          </div>
+          <div class="heritage-timeline">
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 01</div>
+              <h3>Tanimoto Gaussian Process</h3>
+              <p>The similarity-first stage focused on chemical distance and probabilistic scaffold reasoning. It established an interpretable baseline and kept structural analogy at the center of the project before the broader prototype families expanded.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 02</div>
+              <h3>Tree and Tabular Acceleration</h3>
+              <p>Modular LightGBM, HistGradientBoosting, and related tabular routes tested whether strong non-linear descriptor learners could outperform more classical baselines while staying efficient and explainable.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 03</div>
+              <h3>Graph Neural Network Exploration</h3>
+              <p>Virtual GIN, modular GIN, and NODE-style experiments pushed the project beyond fixed descriptors, aiming to learn directly from graph structure and internal molecular connectivity.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 04</div>
+              <h3>Project-Plus Hybrids</h3>
+              <p>The project-plus line introduced project-plus GIN, project-plus GIN hybrid, and project-plus ChemBERTa combinations, giving the system a broader search space across graph, sequence, and tabular representations.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 05</div>
+              <h3>Noteworthy and SOTA Tracks</h3>
+              <p>The nephro SOTA line plus noteworthy fixed and noteworthy final tracks acted as stress tests for promising ideas, helping identify what transferred well to external evaluation and what remained brittle.</p>
+            </div>
+            <div class="card timeline-card">
+              <div class="timeline-tag">Phase 06</div>
+              <h3>Stacking and Full-Coverage Systems</h3>
+              <p>Modular stacking ensembles and the full-coverage meta-model families became the turning point: they combined multiple perspectives so the predictor could stay expressive, broad, and more stable on external molecules.</p>
+            </div>
+            <div class="card timeline-card highlight">
+              <div class="timeline-tag">Current Frontier</div>
+              <h3>Five Main Engines, One Safer-Screening Story</h3>
+              <p>The current dashboard centers on five main engines: Full Coverage Ensemble, Descriptor + Fingerprint Ensemble, Autoencoder Model, ChemBERTa Hybrid, and Similarity Model. Together they represent the most understandable and presentation-ready form of the project so far.</p>
+            </div>
+            <div class="card timeline-card highlight">
+              <div class="timeline-tag">Why It Matters</div>
+              <h3>From Model Experiments to Human Impact</h3>
+              <p>Every iteration in this project supports the same goal: help flag nephrotoxicity risk earlier, support medicinal chemistry decisions sooner, and reduce the chance that harmful compounds reach patients or late-stage development.</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Modal: used for explanatory deep dives without navigating away from
+         the current dashboard context. -->
+    <div id="detail-modal" class="modal-backdrop">
+      <div class="modal-box">
+        <button id="close-modal" class="btn-close">&times;</button>
+        <div id="modal-content"></div>
+      </div>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

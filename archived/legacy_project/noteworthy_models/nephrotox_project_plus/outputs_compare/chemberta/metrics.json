@@ -1,0 +1,33 @@
+{
+  "model_name": "chemberta",
+  "device": "mps",
+  "threshold": 0.77,
+  "val": {
+    "accuracy": 0.7348242811501597,
+    "precision": 0.8947368421052632,
+    "recall": 0.5895953757225434,
+    "f1": 0.710801393728223,
+    "kappa": 0.48441066148014367,
+    "auroc": 0.8051197357555739,
+    "specificity": 0.9142857142857143,
+    "sensitivity": 0.5895953757225434,
+    "mcc": 0.5206383629411999,
+    "threshold": 0.77
+  },
+  "test": {
+    "accuracy": 0.6788079470198676,
+    "precision": 0.7304347826086957,
+    "recall": 0.56,
+    "f1": 0.6339622641509434,
+    "kappa": 0.3566000439270811,
+    "auroc": 0.7278508771929824,
+    "specificity": 0.7960526315789473,
+    "sensitivity": 0.56,
+    "mcc": 0.36661640971143095,
+    "threshold": 0.77
+  },
+  "n_train": 1214,
+  "n_val": 313,
+  "n_test": 302,
+  "hf_model_name": "seyonec/ChemBERTa-zinc-base-v1"
+}

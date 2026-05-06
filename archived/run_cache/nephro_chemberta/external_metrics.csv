@@ -1,0 +1,2 @@
+model_name,auroc,accuracy,f1,kappa,n_train,n_test
+chemberta_hybrid_cb_lgbm,0.7851754385964912,0.7218543046357616,0.7181208053691275,0.4436354066146153,1527,302

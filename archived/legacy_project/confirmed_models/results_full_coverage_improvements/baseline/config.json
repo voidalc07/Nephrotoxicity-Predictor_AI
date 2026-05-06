@@ -1,0 +1,14 @@
+{
+  "model_name": "ens_r2_b1024_dice_k31_25_15_isotonic_thr040",
+  "radius": 2,
+  "bits": 1024,
+  "metric": "dice",
+  "ks": [
+    31,
+    25,
+    15
+  ],
+  "calibration": "isotonic",
+  "threshold": 0.4,
+  "protected": true
+}

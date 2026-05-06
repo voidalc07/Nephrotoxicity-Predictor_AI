@@ -1,0 +1,9 @@
+{
+  "stack_features": [
+    "baseline",
+    "weighted_knn",
+    "r3_knn",
+    "desc_lr",
+    "concat_lr"
+  ]
+}

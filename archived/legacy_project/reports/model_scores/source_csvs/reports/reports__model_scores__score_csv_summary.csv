@@ -1,0 +1,5 @@
+source_csv,model_group,primary_metric,best_primary_score,num_rows
+noteworthy_models/nephrotox_fixed/results/cv_metrics.csv,nephrotox_fixed,auc,0.9871431028551771,5
+noteworthy_models/nephrotox_fixed/results/external_metrics.csv,nephrotox_fixed,auc,0.7594292803970223,2
+noteworthy_models/nephrotox_fixed/results/cv_summary.csv,nephrotox_fixed,,,7
+noteworthy_models/nephrotox_project_plus/outputs_compare/leaderboard.csv,nephrotox_project_plus,auroc,0.7278508771929824,3

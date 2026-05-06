@@ -1,0 +1,10 @@
+{
+  "model": "knn_ensemble",
+  "feature_set": "morgan_r2_plus_r3_1024concat",
+  "metric": "dice",
+  "ks": [
+    31,
+    25,
+    15
+  ]
+}

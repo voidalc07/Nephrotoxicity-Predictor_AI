@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from src.config.settings import DATASET_REPORT_PATH, PROCESSED_DATA_DIR, RAW_DATA_DIR
+from src.utils.io import ensure_dir, write_json
+
+# -------------------------------------------------------------------------
+# Dataset Canonicalisation Contract
+# The raw project spreadsheets use inconsistent headers, spacing, and file
+# naming. These aliases and dataset specifications define the reproducible
+# transformation from raw benchmark files into the cleaned processed tables
+# consumed by every training and evaluation script.
+# -------------------------------------------------------------------------
+SMILES_ALIASES = ("canonical SMILES", "canonical_smiles", "smiles", "SMILES")
+LABEL_ALIASES = ("label", "Label", "LABEL")
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    raw_name: str
+    processed_name: str
+    kind: str
+
+
+DATASET_SPECS = [
+    DatasetSpec("model construction dataset.csv", "model_construction_dataset.csv", "label"),
+    DatasetSpec("external test dataset.csv", "external_test_dataset.csv", "label"),
+    DatasetSpec("model molecular murcko scaffolds.csv", "model_molecular_murcko_scaffolds.csv", "scaffold"),
+    DatasetSpec("model molecular carbon scaffolds.csv", "model_molecular_carbon_scaffolds.csv", "scaffold"),
+    DatasetSpec(
+        "model nephrotoxicity molecular murcko scaffolds.csv",
+        "model_nephrotoxicity_molecular_murcko_scaffolds.csv",
+        "scaffold",
+    ),
+    DatasetSpec(
+        "model nephrotoxicity molecular carbon scaffolds.csv",
+        "model_nephrotoxicity_molecular_carbon_scaffolds.csv",
+        "scaffold",
+    ),
+    DatasetSpec("external molecular murcko scaffolds.csv", "external_molecular_murcko_scaffolds.csv", "scaffold"),
+    DatasetSpec("external molecular carbon scaffolds.csv", "external_molecular_carbon_scaffolds.csv", "scaffold"),
+]
+
+
+# -------------------------------------------------------------------------
+# Header Normalisation
+# Public cheminformatics datasets often vary only in superficial header
+# formatting. These helpers allow the preparation stage to absorb those
+# variations while still enforcing a stable downstream schema.
+# -------------------------------------------------------------------------
+def _normalized_columns(frame: pd.DataFrame) -> dict[str, str]:
+    return {str(col).strip().lower(): str(col) for col in frame.columns}
+
+
+def _find_column(frame: pd.DataFrame, aliases: tuple[str, ...]) -> str:
+    lookup = _normalized_columns(frame)
+    for alias in aliases:
+        key = alias.strip().lower()
+        if key in lookup:
+            return lookup[key]
+    raise ValueError(f"Could not find any of columns {aliases} in {list(frame.columns)}")
+
+
+# -------------------------------------------------------------------------
+# Label Dataset Cleaning
+# The core train and external-evaluation files are reduced to canonical
+# molecule-label pairs. The cleaning removes blank structures, non-binary
+# labels, duplicate rows, and conflicting annotations so the supervised
+# learning problem remains well-posed and auditable.
+# -------------------------------------------------------------------------
+def _clean_label_dataset(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    original_rows = len(frame)
+    frame = frame.copy()
+    frame.columns = [str(col).strip() for col in frame.columns]
+    frame = frame.dropna(how="all")
+
+    smiles_col = _find_column(frame, SMILES_ALIASES)
+    label_col = _find_column(frame, LABEL_ALIASES)
+
+    # Clean the main label file so it only keeps valid, unique molecules with 0 or 1 labels.
+    cleaned = pd.DataFrame(
+        {
+            "canonical SMILES": frame[smiles_col].astype(str).str.strip(),
+            "label": pd.to_numeric(frame[label_col], errors="coerce"),
+        }
+    )
+    blank_smiles = int((cleaned["canonical SMILES"] == "").sum())
+    cleaned = cleaned[cleaned["canonical SMILES"] != ""]
+
+    invalid_labels = int(cleaned["label"].isna().sum())
+    cleaned = cleaned.dropna(subset=["label"])
+    cleaned["label"] = cleaned["label"].astype(int)
+
+    invalid_binary = int((~cleaned["label"].isin([0, 1])).sum())
+    cleaned = cleaned[cleaned["label"].isin([0, 1])]
+
+    exact_duplicate_rows = int(cleaned.duplicated().sum())
+    cleaned = cleaned.drop_duplicates().reset_index(drop=True)
+
+    conflicting_labels = int(cleaned.groupby("canonical SMILES")["label"].nunique().gt(1).sum())
+
+    report = {
+        "original_rows": original_rows,
+        "processed_rows": len(cleaned),
+        "blank_smiles_removed": blank_smiles,
+        "invalid_labels_removed": invalid_labels + invalid_binary,
+        "exact_duplicate_rows_removed": exact_duplicate_rows,
+        "conflicting_smiles_with_multiple_labels": conflicting_labels,
+        "columns_written": list(cleaned.columns),
+    }
+    return cleaned, report
+
+
+# -------------------------------------------------------------------------
+# Scaffold Frequency Cleaning
+# Scaffold tables support overlap analysis and external-validity discussion.
+# Aggregating duplicate scaffold rows here ensures later Bemis-Murcko and
+# carbon-scaffold summaries reflect chemical families rather than CSV noise.
+# -------------------------------------------------------------------------
+def _clean_scaffold_dataset(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    original_rows = len(frame)
+    frame = frame.copy()
+    frame.columns = [str(col).strip() for col in frame.columns]
+    frame = frame.dropna(how="all")
+
+    unnamed = [col for col in frame.columns if col.lower().startswith("unnamed:")]
+    if unnamed:
+        frame = frame.drop(columns=unnamed)
+
+    scaffold_col = _find_column(frame, ("scaffold",))
+    frequency_col = _find_column(frame, ("frequency",))
+
+    # Clean the scaffold files into simple count tables so they can be compared the same way.
+    cleaned = pd.DataFrame(
+        {
+            "scaffold": frame[scaffold_col].astype(str).str.strip(),
+            "frequency": pd.to_numeric(frame[frequency_col], errors="coerce"),
+        }
+    )
+    blank_scaffolds = int((cleaned["scaffold"] == "").sum())
+    cleaned = cleaned[cleaned["scaffold"] != ""]
+    invalid_frequency = int(cleaned["frequency"].isna().sum())
+    cleaned = cleaned.dropna(subset=["frequency"])
+    cleaned["frequency"] = cleaned["frequency"].astype(int)
+
+    grouped = cleaned.groupby("scaffold", as_index=False)["frequency"].sum()
+    grouped = grouped.sort_values(["frequency", "scaffold"], ascending=[False, True]).reset_index(drop=True)
+
+    report = {
+        "original_rows": original_rows,
+        "processed_rows": len(grouped),
+        "blank_scaffolds_removed": blank_scaffolds,
+        "invalid_frequency_removed": invalid_frequency,
+        "aggregated_duplicate_scaffolds": int(len(cleaned) - len(grouped)),
+        "columns_written": list(grouped.columns),
+    }
+    return grouped, report
+
+
+# -------------------------------------------------------------------------
+# File-by-File Dataset Processing
+# Each dataset type is cleaned with a method appropriate to its scientific
+# role: label tables become supervised-learning matrices, while scaffold
+# tables become family-frequency summaries for generalisation analysis.
+# -------------------------------------------------------------------------
+def _clean_dataset(spec: DatasetSpec) -> dict[str, Any]:
+    raw_path = RAW_DATA_DIR / spec.raw_name
+    processed_path = PROCESSED_DATA_DIR / spec.processed_name
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Raw dataset not found: {raw_path}")
+
+    frame = pd.read_csv(raw_path)
+    if spec.kind == "label":
+        cleaned, stats = _clean_label_dataset(frame)
+    elif spec.kind == "scaffold":
+        cleaned, stats = _clean_scaffold_dataset(frame)
+    else:
+        raise ValueError(f"Unsupported dataset kind: {spec.kind}")
+
+    # Save the cleaned file and keep a short report about what changed.
+    cleaned.to_csv(processed_path, index=False)
+    return {
+        "raw_file": spec.raw_name,
+        "processed_file": spec.processed_name,
+        "kind": spec.kind,
+        **stats,
+    }
+
+
+# -------------------------------------------------------------------------
+# End-to-End Dataset Preparation
+# This top-level entry point regenerates the processed dataset directory and
+# writes a machine-readable report describing what changed. That report acts
+# as a provenance trail for the dissertation's data-quality methodology.
+# -------------------------------------------------------------------------
+def prepare_datasets() -> dict[str, Any]:
+    ensure_dir(RAW_DATA_DIR)
+    ensure_dir(PROCESSED_DATA_DIR)
+
+    dataset_reports = [_clean_dataset(spec) for spec in DATASET_SPECS]
+    report = {
+        "raw_dir": str(RAW_DATA_DIR),
+        "processed_dir": str(PROCESSED_DATA_DIR),
+        "datasets": dataset_reports,
+    }
+    write_json(DATASET_REPORT_PATH, report)
+    return report

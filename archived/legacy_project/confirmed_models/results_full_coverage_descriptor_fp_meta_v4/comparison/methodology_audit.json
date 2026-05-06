@@ -1,0 +1,10 @@
+{
+  "full_coverage_only": true,
+  "external_threshold_tuning": false,
+  "external_calibration_fitting": false,
+  "external_feature_parameter_tuning": false,
+  "selection_based_on_internal_only": true,
+  "protected_baseline_definition_unchanged": true,
+  "current_challenger_preserved_as_reference": false,
+  "overall_replacement_rule_f1_acc_priority_with_auroc_tolerance": 0.003
+}
