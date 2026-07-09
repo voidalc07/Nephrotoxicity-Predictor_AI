@@ -75,12 +75,15 @@ The standalone model runners also compute auxiliary metrics such as Cohen's kapp
 
 ## Results and Insights
 
-The current workspace already contains a consolidated evaluation file in `outputs/final_reports/overall_evaluation.csv`. In the available successful rows, the strongest recorded external performance is from the unsupervised autoencoder variant, followed closely by the ChemBERTa hybrid:
+The current workspace already contains a consolidated evaluation file in `outputs/final_reports/overall_evaluation.csv`. Ranked by external-test ROC-AUC (the held-out generalisation measure), the recorded runs are:
 
+- `full_coverage_improvements` / `meta_logreg_knn_plus_lgbm`: accuracy 0.768, F1 0.762, ROC-AUC 0.860, PR-AUC 0.872
+- `full_coverage_descriptor_fp_meta_v4` / `challenger_proxy_meta`: accuracy 0.755, F1 0.747, ROC-AUC 0.856, PR-AUC 0.868
+- `modular_tanimoto_gpc` / `TanimotoGPC`: accuracy 0.768, F1 0.767, ROC-AUC 0.829, PR-AUC 0.846
 - `nephro_unsupervised` / `Autoencoder`: accuracy 0.745, F1 0.735, ROC-AUC 0.826, PR-AUC 0.840
 - `nephro_chemberta` / `chemberta_hybrid_cb_lgbm`: accuracy 0.722, F1 0.718, ROC-AUC 0.785, PR-AUC 0.759
 
-These outputs indicate that the latent autoencoder representation is currently the most effective of the recorded portable runs, while the ChemBERTa hybrid remains competitive and more expressive from a representation-learning perspective.
+These outputs indicate that the `full_coverage` meta-ensembles (logistic regression + kNN + LightGBM) are currently the strongest on external data, with the Tanimoto GPC and the unsupervised autoencoder close behind. The ChemBERTa hybrid is the strongest on internal cross-validation (ROC-AUC 0.921) but shows the largest internal-to-external gap (~0.14), which points to overfitting to the training chemistry and is worth discussing as a limitation rather than a headline result.
 
 The dashboard's Deep Analytics view reflects this comparison through the AUROC/F1 chart, the generalisation-gap panel, and the Tanimoto similarity heatmap.
 
