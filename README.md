@@ -376,19 +376,3 @@ The current dashboard does not yet run brand-new single-molecule inference from 
 4. Outputs are written to `outputs/`
 5. Start `python serve_dashboard.py` to inspect them in the browser
 
-## Quick Start
-
-If everything is already installed and you just want to run it:
-
-```bash
-cd "/Users/rajee/Library/CloudStorage/OneDrive-NorthumbriaUniversity-ProductionAzureAD/YEAR 3/KV6013 DIRIL DATASET PROJECT/FINAL_ KV6013_NEPHROTOXICITY_PREDICTOR"
-python serve_dashboard.py
-```
-
-If you want a full refresh first:
-
-```bash
-cd "/Users/rajee/Library/CloudStorage/OneDrive-NorthumbriaUniversity-ProductionAzureAD/YEAR 3/KV6013 DIRIL DATASET PROJECT/FINAL_ KV6013_NEPHROTOXICITY_PREDICTOR"
-python main.py
-python serve_dashboard.py
-```
